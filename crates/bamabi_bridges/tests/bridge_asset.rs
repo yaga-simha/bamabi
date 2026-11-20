@@ -455,7 +455,8 @@ fn multi_layer_overlay_read_directory_merges_and_deduplicates_entries() {
         let path_str = handle
             .path()
             .expect("folder entry has asset path")
-            .to_string();
+            .to_string()
+            .replace('\\', "/");
         let typed_id = handle
             .id()
             .try_typed::<TextAsset>()

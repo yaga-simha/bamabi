@@ -209,16 +209,50 @@ BAM_EXPORT void bamabi_shutdown(BamInstance* instance) {{
             bamabi_sdk_gen::render_c99_header().expect("render bamabi.h"),
         )
         .expect("write bamabi.h");
-        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_owned());
+        let cc = std::env::var("CC")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| {
+                let candidates: &[&str] = if cfg!(target_os = "windows") {
+                    &["clang", "gcc", "cl", "cc"]
+                } else {
+                    &["cc", "clang", "gcc"]
+                };
+                candidates
+                    .iter()
+                    .copied()
+                    .find(|cand| {
+                        Command::new(cand)
+                            .arg(if *cand == "cl" { "/?" } else { "--version" })
+                            .output()
+                            .is_ok()
+                    })
+                    .unwrap_or("cc")
+                    .to_owned()
+            });
         let mut cmd = Command::new(&cc);
-        cmd.arg("-std=c99")
-            .arg("-shared")
-            .arg("-O1")
-            .arg(format!("-I{}", include_dir.display()));
-        if !cfg!(target_os = "windows") {
-            cmd.arg("-fPIC");
+        let lower = cc.to_ascii_lowercase();
+        if cfg!(target_os = "windows") && (lower.ends_with("cl") || lower.ends_with("cl.exe")) {
+            let obj_path = dylib_path.with_extension("obj");
+            let implib_path = dylib_path.with_extension("lib");
+            cmd.args(["/nologo", "/LD", "/TC", "/std:c11", "/O1"])
+                .arg("/I")
+                .arg(&include_dir)
+                .arg(format!("/Fo:{}", obj_path.display()))
+                .arg(format!("/Fe:{}", dylib_path.display()))
+                .arg(&src_path)
+                .arg("/link")
+                .arg(format!("/IMPLIB:{}", implib_path.display()));
+        } else {
+            cmd.arg("-std=c99")
+                .arg("-shared")
+                .arg("-O1")
+                .arg(format!("-I{}", include_dir.display()));
+            if !cfg!(target_os = "windows") {
+                cmd.arg("-fPIC");
+            }
+            cmd.arg(&src_path).arg("-o").arg(&dylib_path);
         }
-        cmd.arg(&src_path).arg("-o").arg(&dylib_path);
 
         let output = cmd.output().expect("invoke C compiler for test mod");
         assert!(
