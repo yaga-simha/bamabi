@@ -1,0 +1,525 @@
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+//! Zero-serialization, asymmetric C-ABI (`ABI 0.3.0`) native modding framework for Bevy ECS (`v0.20+`).
+//!
+//! `bamabi` is the canonical top-level host facade crate (matching the repository name
+//! `https://github.com/yaga-simha/bamabi`). It re-exports [`bamabi_host`],
+//! [`ModComponent`], [`AbiPod`], [`bamabi_sys`], optional companion crates
+//! (`bamabi_bridges`, `bamabi_render`, `bamabi_reflect`,
+//! `bamabi_watcher`), curated bridge presets (`preset-2d`, `preset-3d`, `preset-ui`,
+//! `preset-full`), and [`prelude`], while enforcing `#![forbid(unsafe_code)]` across all
+//! public host APIs.
+//!
+//! # Purpose & Design Philosophy
+//!
+//! Dynamically loading native shared libraries (`.so`, `.dylib`, `.dll`) into a Bevy application
+//! at runtime requires navigating three systems constraints:
+//!
+//! 1. **Zero Shared Rust ABI Assumptions:** Rust provides no stable cross-compiler ABI.
+//!    `bamabi` communicates strictly over an `extern "C"` boundary (`ABI 0.3.0`), allowing
+//!    guest mods to be compiled with different `rustc` versions or written in ISO C99, C++17/20,
+//!    or Zig.
+//! 2. **Zero Serialization Overhead:** Host ECS `Table` columns are exposed directly as
+//!    contiguous Structure-of-Arrays (SoA) byte slices, `SparseSet` columns as batched per-row
+//!    pointer arrays, and singleton resources with change-detection ticks without JSON, MessagePack,
+//!    or Bincode serialization.
+//! 3. **Allocator & Relational Integrity:** Host and guest dynamic libraries link independent heap
+//!    allocators. Memory allocated on one side is never freed by the other, and all deferred guest
+//!    spawns, inserts, and removals execute through Bevy `EntityWorldMut` paths so
+//!    `ComponentHooks`, `#[require(...)]` Required Components, and `ChildOf` / `Children`
+//!    relationships fire accurately.
+//!
+//! ---
+//!
+//! # Host Integration Guide (Crate Consumers)
+//!
+//! ## 1. Add `AbiModPlugin` and Expose Components, Resources & Sets
+//!
+//! Derive [`ModComponent`] on `#[repr(C)]` Bevy components (or [`AbiPod`] on plain-old-data
+//! types), register them on your `App` via [`ModAppExt`], expose host `SystemSet`s via
+//! [`ModAppExt::register_mod_visible_set`], and add [`AbiModPlugin`]:
+//!
+//! ```no_run
+//! use bevy_app::App;
+//! use bevy_ecs::component::Component;
+//! use bamabi::prelude::*;
+//!
+//! #[repr(C)]
+//! #[derive(Component, ModComponent, Clone, Copy, Default)]
+//! #[mod_component(name = "my_game::Health")]
+//! struct Health {
+//!     current: f32,
+//!     max: f32,
+//! }
+//!
+//! fn main() {
+//!     let mut app = App::new();
+//!     app.add_plugins(AbiModPlugin::with_error_policy(ModErrorPolicy::Quarantine));
+//!     app.register_mod_component::<Health>(
+//!         ComponentOptions::new().with_raw_insert().with_default(),
+//!     )
+//!     .expect("register Health");
+//!     app.load_mod_with("mods/libcombat_mod.dylib", LoadOptions::default())
+//!         .expect("load mod");
+//!     app.run();
+//! }
+//! ```
+//!
+//! ## 2. Load, Hot-Reload, and Unload Native Mods
+//!
+//! Mods can be loaded from disk using [`ModWorldExt::load_mod_with`] (or [`ModCommandsExt`]) with
+//! [`LoadOptions`], hot-reloaded with state preservation via [`ModWorldExt::reload_mod`], and
+//! unloaded cleanly via [`ModWorldExt::unload_mod`]. Lifecycle events such as [`ModLoaded`],
+//! [`ModUnloaded`], and [`ModSystemFaulted`] are emitted as Bevy messages.
+//!
+//! ```no_run
+//! use bevy_ecs::world::World;
+//! use bamabi::prelude::*;
+//!
+//! fn load_gameplay_mod(world: &mut World) {
+//!     let mod_id = world
+//!         .load_mod_with("mods/libgameplay_mod.dylib", LoadOptions::default())
+//!         .expect("failed to load native mod");
+//!
+//!     // Later, when hot-reloading or shutting down:
+//!     world.unload_mod(mod_id).expect("failed to unload mod");
+//! }
+//! ```
+//!
+//! ## 3. Guest Mod Usage (Separate `cdylib` Crate)
+//!
+//! Guest mods depend on `bamabi_guest` (which has **no** dependency on `bevy`) and
+//! export their entry points with `export_mod!(plugin: MyMod)`:
+//!
+//! ```ignore
+//! use bamabi_guest::prelude::*;
+//! use core::ffi::CStr;
+//!
+//! #[repr(C)]
+//! #[derive(Clone, Copy, AbiPod, GuestComponent)]
+//! #[guest_component(name = "my_game::Health")]
+//! struct Health {
+//!     current: f32,
+//!     max: f32,
+//! }
+//!
+//! #[derive(Default)]
+//! struct RegenerateMod;
+//!
+//! impl GuestPlugin for RegenerateMod {
+//!     const NAME: &'static CStr = c"regenerate_mod";
+//!
+//!     fn build(&mut self, app: &mut GuestApp<'_>) -> FfiResult {
+//!         app.system(c"regenerate")
+//!             .query_typed::<&mut Health>()
+//!             .schedule(ScheduleId::UPDATE)
+//!             .build(|ctx| {
+//!                 ctx.single_query::<&mut Health>().for_each(|healths| {
+//!                     for h in healths {
+//!                         h.current = (h.current + 0.1).min(h.max);
+//!                     }
+//!                 });
+//!             })
+//!     }
+//! }
+//!
+//! export_mod!(plugin: RegenerateMod);
+//! ```
+//!
+//! ---
+//!
+//! # Federated Architecture & Feature Flags
+//!
+//! Across the federated `bamabi` layers (`bamabi-wire`, `bamabi-tools`, `bamabi-core`, and
+//! `bamabi`), `unsafe` FFI machinery is strictly isolated inside `*-sys` crates while all public
+//! host, bridge, render, reflection, watcher, guest, macro, trust, manifest, SDK-generator, and
+//! CLI crates enforce `#![forbid(unsafe_code)]` (and keep `bevy*` out of all non-host crates).
+//!
+//! # Feature Flags
+//!
+//! ## Core Host & Watcher
+//!
+//! - `strict-ffi-checks`: Enables additional runtime FFI layout and pointer validation in
+//!   `bamabi_host`.
+//! - `diagnostics`: Enables optional diagnostic instrumentation in `bamabi_host`.
+//! - `signature-verification`: Enables optional pure-Rust OpenSSH `SSHSIG`, Ed25519 CA
+//!   certificate, `SSHKRL`, `.bam_sig`, and `.bampack` pre-load cryptographic verification
+//!   (`ModTrustPolicy`).
+//! - `hot-reload-watcher`: Enables debounced filesystem hot-reload watching (`ModHotReloadPlugin`).
+//!
+//! ## Curated Bridge Presets
+//!
+//! - `preset-2d`: Curated 2D game preset (`ModPreset2dPlugin`) enabling `bridge-std-types`,
+//!   `bridge-asset`, `bridge-state`, `bridge-picking`, `bridge-audio`, `bridge-camera-2d`, and
+//!   `bridge-ui` (zero 3D PBR/lighting/Solari dependencies).
+//! - `preset-3d`: Curated 3D game preset (`ModPreset3dPlugin`) extending `preset-2d` with
+//!   `bridge-light`, `bridge-camera-controller`, and `bridge-bsn`.
+//! - `preset-ui`: Curated UI / editor preset (`ModPresetUiPlugin`) enabling `bridge-std-types`,
+//!   `bridge-asset`, `bridge-picking`, `bridge-ui`, and `bridge-feathers`.
+//! - `preset-full`: Full companion bridge preset (`ModPresetFullPlugin`) combining `preset-3d`,
+//!   `preset-ui`, and `bridge-solari`.
+//!
+//! ## Individual Subsystem Bridges, Render & Reflection
+//!
+//! - `bridge-std-types`: Enables Bevy standard component/resource/input bridges
+//!   (`StdTypesBridgePlugin`, `Disabled`, `ModInputExtBridgePlugin`).
+//! - `bridge-asset`: Enables isolated `mod://<namespace>/...` Bevy asset sourcing &
+//!   `AssetOverlayPolicy` (`ModAssetPlugin`).
+//! - `bridge-state`: Enables Bevy `States`, `SubStates`, and `ComputedStates` dynamic slab
+//!   exposure (`ModStateExt`).
+//! - `bridge-reflect`: Enables dynamic `bevy_reflect`, `bevy_remote` BRP, `bevy_settings` TOML,
+//!   `ModSaveGamePlugin` (with `EphemeralHandleBehavior` asset-handle serialization), and
+//!   `ModTelemetryPlugin`.
+//! - `bridge-bsn`: Enables Bevy Scene Notation (`bevy_scene`) scene spawning (`cmd_spawn_scene`).
+//! - `bridge-picking`: Enables Bevy `0.20` flattened `Pointer*` observers, `EntityCursor`, and
+//!   `Gamepad` + rumble bridges (`ModPickingBridgePlugin`, `ModInputExtBridgePlugin`).
+//! - `bridge-audio`: Enables `AudioPlayer<AudioSource>`, `PlaybackSettings`, and `SpatialAudioSink`
+//!   bridges (`ModAudioBridgePlugin`).
+//! - `bridge-camera-2d`: Enables lightweight 2D camera bridge (`FfiCamera2d`,
+//!   `ModCameraLightBridgePlugin`) without 3D PBR/lighting/Solari dependencies.
+//! - `bridge-light`: Enables `Camera2d` (implies `bridge-camera-2d`), `Camera3d`, `Tonemapping`,
+//!   `DebandDither`, `ScreenSpaceTransmission`, and `PointLight`/`SpotLight`/`DirectionalLight`
+//!   bridges (`ModCameraLightBridgePlugin`).
+//! - `bridge-ui`: Enables retained Bevy `0.20` UI, `EditableText`/`TextInput`,
+//!   `InlineBox`/`InlineImage`, and headless widgets (`ModUiBridgePlugin`).
+//! - `bridge-feathers`: Enables `bevy_feathers` control and `ThemeContext` bridges (implies
+//!   `bridge-ui`).
+//! - `bridge-camera-controller`: Enables `PanOrbitCamera` controller bridge
+//!   (`ModCameraLightBridgePlugin`).
+//! - `bridge-solari`: Enables `SolariLighting` realtime GI bridge (`ModCameraLightBridgePlugin`).
+//! - `sub-app-extract`: Enables `SubApp` (`RenderApp`) extraction, `.wesl` 2D/3D materials
+//!   (`ModWeslMaterialPlugin`, `ModSpriteMaterialPlugin`), opt-in mesh-shader pipelines
+//!   (`ModMeshShaderPlugin`), and bounded GPU device-loss recovery (`ModRenderRecoveryPlugin`).
+
+#[cfg(any(
+    feature = "bridge-std-types",
+    feature = "bridge-asset",
+    feature = "bridge-state",
+    feature = "bridge-bsn",
+    feature = "bridge-picking",
+    feature = "bridge-audio",
+    feature = "bridge-camera-2d",
+    feature = "bridge-light",
+    feature = "bridge-ui",
+    feature = "bridge-feathers",
+    feature = "bridge-camera-controller",
+    feature = "bridge-solari"
+))]
+pub use bamabi_bridges;
+pub use bamabi_host;
+pub use bamabi_host::*;
+pub use bamabi_macros;
+#[cfg(feature = "bridge-reflect")]
+pub use bamabi_reflect;
+#[cfg(feature = "sub-app-extract")]
+pub use bamabi_render;
+#[cfg(feature = "hot-reload-watcher")]
+pub use bamabi_watcher;
+
+/// Re-exported optional Bevy subsystem bridges (`std_types`, `asset`, `state`, `bsn`, `picking`,
+/// `input_ext`, `camera_light`, `audio`, `ui`, `reflect`, `savegame`, and `telemetry`).
+pub mod bridges {
+    #[cfg(feature = "bridge-camera-2d")]
+    pub use bamabi_bridges::FfiCamera2d;
+    #[cfg(feature = "bridge-camera-controller")]
+    pub use bamabi_bridges::FfiPanOrbitCamera;
+    #[cfg(feature = "bridge-solari")]
+    pub use bamabi_bridges::FfiSolariLighting;
+    #[cfg(all(
+        feature = "bridge-std-types",
+        feature = "bridge-asset",
+        feature = "bridge-state"
+    ))]
+    pub use bamabi_bridges::ModBridgesPlugin;
+    #[cfg(feature = "preset-2d")]
+    pub use bamabi_bridges::ModPreset2dPlugin;
+    #[cfg(feature = "preset-3d")]
+    pub use bamabi_bridges::ModPreset3dPlugin;
+    #[cfg(feature = "preset-full")]
+    pub use bamabi_bridges::ModPresetFullPlugin;
+    #[cfg(feature = "preset-ui")]
+    pub use bamabi_bridges::ModPresetUiPlugin;
+    #[cfg(feature = "bridge-asset")]
+    pub use bamabi_bridges::{
+        AssetOverlayPolicy, ConfiguredModAssetPlugin, ModAssetAppExt, ModAssetPlugin,
+        ModAssetRegistry, ModAssetWorldExt, OVERLAY_NAMESPACE, asset,
+    };
+    #[cfg(feature = "bridge-audio")]
+    pub use bamabi_bridges::{
+        AudioBridgeSystems, FfiAudioPlaybackSettings, FfiAudioPlayerSpec,
+        FfiSpatialAudioSinkControl, ModAudioBridgePlugin, audio, register_audio_bridges,
+    };
+    #[cfg(feature = "bridge-std-types")]
+    pub use bamabi_bridges::{
+        CANONICAL_DISABLED_NAME, FfiGlobalTransform, FfiKeyCode, FfiKeyboardInput, FfiMouseButton,
+        FfiMouseInput, FfiTimeFixed, FfiTimeReal, FfiTimeVirtual, FfiTransform, FfiVisibility,
+        StdTypesBridgePlugin, register_std_types_bridges, std_types,
+    };
+    #[cfg(feature = "bridge-bsn")]
+    pub use bamabi_bridges::{
+        CANONICAL_READY_NAME, HostSceneRegistry, ModBsnAppExt, ModBsnPlugin, ModBsnWorldExt,
+        SCENE_PATCH_ALIAS, bsn,
+    };
+    #[cfg(any(
+        feature = "bridge-camera-2d",
+        feature = "bridge-light",
+        feature = "bridge-camera-controller",
+        feature = "bridge-solari"
+    ))]
+    pub use bamabi_bridges::{
+        CameraLightBridgeSystems, ModCameraLightBridgePlugin, camera_light,
+        register_camera_light_bridges,
+    };
+    #[cfg(feature = "bridge-ui")]
+    pub use bamabi_bridges::{
+        FfiBorderColor, FfiBorderRadius, FfiCornerRadius, FfiEditableTextConfig, FfiEmSize,
+        FfiFontSize, FfiInlineBox, FfiInlineImage, FfiRemSize, FfiRgba, FfiSelectedTab, FfiTab,
+        FfiTabList, FfiUiNode, FfiUiRect, FfiUiTextStyle, FfiVal, FfiValueChange, ModUiAppExt,
+        ModUiBridgePlugin, ModUiBridgeSet, ModUiRegistry, ModUiWorldExt, cleanup_mod_ui_in_world,
+        register_ui_bridges, ui,
+    };
+    #[cfg(feature = "bridge-light")]
+    pub use bamabi_bridges::{FfiCamera3d, FfiDirectionalLight, FfiPointLight, FfiSpotLight};
+    #[cfg(feature = "bridge-picking")]
+    pub use bamabi_bridges::{
+        FfiEntityCursor, FfiGamepadButton, FfiGamepadRumble, FfiGamepadState, FfiPointerButton,
+        FfiPointerClick, FfiPointerDrag, FfiPointerKind, FfiPointerMove, FfiPointerOut,
+        FfiPointerOver, FfiPointerPress, FfiPointerRelease, ModPickingBridgePlugin,
+        PickingBridgeSet, picking, register_picking_bridges,
+    };
+    #[cfg(feature = "bridge-feathers")]
+    pub use bamabi_bridges::{
+        FfiFeathersColorInput, FfiFeathersDropdown, FfiFeathersListRow, FfiFeathersListView,
+        FfiFeathersNumberInput, FfiFeathersScrollableList, FfiFeathersSelect, FfiThemeContext,
+    };
+    #[cfg(any(feature = "bridge-picking", feature = "bridge-std-types"))]
+    pub use bamabi_bridges::{
+        FfiMouseMotion, FfiMouseScroll, InputExtBridgeSet, ModInputExtBridgePlugin, input_ext,
+        register_input_ext_bridges,
+    };
+    #[cfg(feature = "bridge-state")]
+    pub use bamabi_bridges::{
+        ModDespawnOnEnter, ModDespawnOnExit, ModNextState, ModStateEntry, ModStateError,
+        ModStateExt, ModStateHandle, ModStateKind, ModStateSlab, ModStateSpec,
+        ModStateTransitionRequest, STATE_ABSENT_DISCRIMINANT, state,
+    };
+    #[cfg(feature = "bridge-reflect")]
+    pub use bamabi_reflect::{
+        BRP_METHOD_BAM_COMPONENT_SCHEMAS, BRP_METHOD_BAM_HOT_RELOAD, BRP_METHOD_BAM_LIST_MODS,
+        BRP_METHOD_BAM_SYSTEM_METRICS, BRP_METHOD_GET_COMPONENTS, BRP_METHOD_GET_RESOURCES,
+        BRP_METHOD_INSERT_COMPONENTS, BRP_METHOD_LIST_COMPONENTS, BRP_METHOD_MUTATE_COMPONENTS,
+        BRP_METHOD_MUTATE_RESOURCES, ComponentMigrationContext, CustomHotReloadHandler,
+        EphemeralHandleBehavior, HotReloadOutcome, HotReloadRequest, MOD_SAVE_ARCHIVE_VERSION,
+        MOD_SAVE_BINARY_MAGIC, MigratedComponentPayload, ModComponentMigrator, ModHotReloadQueue,
+        ModReflectAppExt, ModReflectError, ModReflectPlugin, ModReflectRegistry,
+        ModReflectRemoteExt, ModReflectWorldExt, ModSaveAppExt, ModSaveArchive,
+        ModSaveFormatPreference, ModSaveGamePlugin, ModSaveLoadError, ModSaveLoadPolicy,
+        ModSaveLoadReport, ModSaveOptions, ModSaveRegistry, ModSaveWorldExt, ModSettingsError,
+        ModSettingsRegistry, ModTelemetryEndpoint, ModTelemetryPlugin, ModTelemetryRecorder,
+        ModTelemetryRemoteExt, ModTelemetryTransport, ModTelemetryWorldExt,
+        SYSTEM_TELEMETRY_DIGEST_SIZE, SYSTEM_TELEMETRY_DIGEST_VERSION, SYSTEM_TELEMETRY_MAGIC,
+        SavedComponentEntry, SavedComponentFormat, SavedComponentHeader, SavedComponentPayload,
+        SavedEntityRecord, SavedFieldHeader, SavedModMetadata, SummaryTickTableStats,
+        SystemExecutionSample, SystemMetricSnapshot, SystemTelemetryDigest64,
+        SystemTelemetryMetrics, TELEMETRY_FLAG_BUDGET_BREACHED, TELEMETRY_FLAG_FAULTED,
+        TELEMETRY_FLAG_QUARANTINED, TELEMETRY_FLAG_SUMMARY_TICK_ACTIVE, TelemetryFrameError,
+        TypedReflectBridgeEntry, WitnessReflectSchema, flush_mod_telemetry_system,
+        fnv1a_64_hash_system, handle_mod_brp_request, handle_telemetry_brp_request,
+        install_bam_telemetry_brp_methods, install_mod_brp_methods, probe_summary_tick_tables,
+        process_pending_hot_reloads, reflect, savegame, telemetry,
+    };
+}
+
+#[cfg(feature = "sub-app-extract")]
+pub use bamabi_render::{recovery, sprite_mesh_shaders, sub_app_materials};
+
+#[cfg(feature = "bridge-reflect")]
+pub use bamabi_reflect::{savegame, telemetry};
+
+#[cfg(feature = "hot-reload-watcher")]
+pub use bamabi_watcher::watcher;
+
+#[cfg(feature = "bridge-camera-2d")]
+pub use bamabi_bridges::FfiCamera2d;
+#[cfg(feature = "bridge-camera-controller")]
+pub use bamabi_bridges::FfiPanOrbitCamera;
+#[cfg(feature = "bridge-solari")]
+pub use bamabi_bridges::FfiSolariLighting;
+#[cfg(all(
+    feature = "bridge-std-types",
+    feature = "bridge-asset",
+    feature = "bridge-state"
+))]
+pub use bamabi_bridges::ModBridgesPlugin;
+#[cfg(feature = "preset-2d")]
+pub use bamabi_bridges::ModPreset2dPlugin;
+#[cfg(feature = "preset-3d")]
+pub use bamabi_bridges::ModPreset3dPlugin;
+#[cfg(feature = "preset-full")]
+pub use bamabi_bridges::ModPresetFullPlugin;
+#[cfg(feature = "preset-ui")]
+pub use bamabi_bridges::ModPresetUiPlugin;
+#[cfg(feature = "bridge-asset")]
+pub use bamabi_bridges::{
+    AssetOverlayPolicy, ConfiguredModAssetPlugin, ModAssetAppExt, ModAssetPlugin, ModAssetRegistry,
+    ModAssetWorldExt, OVERLAY_NAMESPACE,
+};
+#[cfg(feature = "bridge-audio")]
+pub use bamabi_bridges::{
+    AudioBridgeSystems, FfiAudioPlaybackSettings, FfiAudioPlayerSpec, FfiSpatialAudioSinkControl,
+    ModAudioBridgePlugin, register_audio_bridges,
+};
+#[cfg(feature = "bridge-std-types")]
+pub use bamabi_bridges::{
+    CANONICAL_DISABLED_NAME, FfiGlobalTransform, FfiKeyCode, FfiKeyboardInput, FfiMouseButton,
+    FfiMouseInput, FfiTimeFixed, FfiTimeReal, FfiTimeVirtual, FfiTransform, FfiVisibility,
+    StdTypesBridgePlugin, register_std_types_bridges,
+};
+#[cfg(feature = "bridge-bsn")]
+pub use bamabi_bridges::{
+    CANONICAL_READY_NAME, HostSceneRegistry, ModBsnAppExt, ModBsnPlugin, ModBsnWorldExt,
+    SCENE_PATCH_ALIAS,
+};
+#[cfg(any(
+    feature = "bridge-camera-2d",
+    feature = "bridge-light",
+    feature = "bridge-camera-controller",
+    feature = "bridge-solari"
+))]
+pub use bamabi_bridges::{
+    CameraLightBridgeSystems, ModCameraLightBridgePlugin, register_camera_light_bridges,
+};
+#[cfg(feature = "bridge-ui")]
+pub use bamabi_bridges::{
+    FfiBorderColor, FfiBorderRadius, FfiCornerRadius, FfiEditableTextConfig, FfiEmSize,
+    FfiFontSize, FfiInlineBox, FfiInlineImage, FfiRemSize, FfiRgba, FfiSelectedTab, FfiTab,
+    FfiTabList, FfiUiNode, FfiUiRect, FfiUiTextStyle, FfiVal, FfiValueChange, ModUiAppExt,
+    ModUiBridgePlugin, ModUiBridgeSet, ModUiRegistry, ModUiWorldExt, cleanup_mod_ui_in_world,
+    register_ui_bridges,
+};
+#[cfg(feature = "bridge-light")]
+pub use bamabi_bridges::{FfiCamera3d, FfiDirectionalLight, FfiPointLight, FfiSpotLight};
+#[cfg(feature = "bridge-picking")]
+pub use bamabi_bridges::{
+    FfiEntityCursor, FfiGamepadButton, FfiGamepadRumble, FfiGamepadState, FfiPointerButton,
+    FfiPointerClick, FfiPointerDrag, FfiPointerKind, FfiPointerMove, FfiPointerOut, FfiPointerOver,
+    FfiPointerPress, FfiPointerRelease, ModPickingBridgePlugin, PickingBridgeSet,
+    register_picking_bridges,
+};
+#[cfg(feature = "bridge-feathers")]
+pub use bamabi_bridges::{
+    FfiFeathersColorInput, FfiFeathersDropdown, FfiFeathersListRow, FfiFeathersListView,
+    FfiFeathersNumberInput, FfiFeathersScrollableList, FfiFeathersSelect, FfiThemeContext,
+};
+#[cfg(any(feature = "bridge-picking", feature = "bridge-std-types"))]
+pub use bamabi_bridges::{
+    FfiMouseMotion, FfiMouseScroll, InputExtBridgeSet, ModInputExtBridgePlugin,
+    register_input_ext_bridges,
+};
+#[cfg(feature = "bridge-state")]
+pub use bamabi_bridges::{
+    ModDespawnOnEnter, ModDespawnOnExit, ModNextState, ModStateEntry, ModStateError, ModStateExt,
+    ModStateHandle, ModStateKind, ModStateSlab, ModStateSpec, ModStateTransitionRequest,
+    STATE_ABSENT_DISCRIMINANT,
+};
+
+#[cfg(feature = "bridge-reflect")]
+pub use bamabi_reflect::{
+    BRP_METHOD_BAM_COMPONENT_SCHEMAS, BRP_METHOD_BAM_HOT_RELOAD, BRP_METHOD_BAM_LIST_MODS,
+    BRP_METHOD_BAM_SYSTEM_METRICS, BRP_METHOD_GET_COMPONENTS, BRP_METHOD_GET_RESOURCES,
+    BRP_METHOD_INSERT_COMPONENTS, BRP_METHOD_LIST_COMPONENTS, BRP_METHOD_MUTATE_COMPONENTS,
+    BRP_METHOD_MUTATE_RESOURCES, ComponentMigrationContext, CustomHotReloadHandler,
+    EphemeralHandleBehavior, HotReloadOutcome, HotReloadRequest, MOD_SAVE_ARCHIVE_VERSION,
+    MOD_SAVE_BINARY_MAGIC, MigratedComponentPayload, ModComponentMigrator, ModHotReloadQueue,
+    ModReflectAppExt, ModReflectError, ModReflectPlugin, ModReflectRegistry, ModReflectRemoteExt,
+    ModReflectWorldExt, ModSaveAppExt, ModSaveArchive, ModSaveFormatPreference, ModSaveGamePlugin,
+    ModSaveLoadError, ModSaveLoadPolicy, ModSaveLoadReport, ModSaveOptions, ModSaveRegistry,
+    ModSaveWorldExt, ModSettingsError, ModSettingsRegistry, ModTelemetryEndpoint,
+    ModTelemetryPlugin, ModTelemetryRecorder, ModTelemetryRemoteExt, ModTelemetryTransport,
+    ModTelemetryWorldExt, SYSTEM_TELEMETRY_DIGEST_SIZE, SYSTEM_TELEMETRY_DIGEST_VERSION,
+    SYSTEM_TELEMETRY_MAGIC, SavedComponentEntry, SavedComponentFormat, SavedComponentHeader,
+    SavedComponentPayload, SavedEntityRecord, SavedFieldHeader, SavedModMetadata,
+    SummaryTickTableStats, SystemExecutionSample, SystemMetricSnapshot, SystemTelemetryDigest64,
+    SystemTelemetryMetrics, TELEMETRY_FLAG_BUDGET_BREACHED, TELEMETRY_FLAG_FAULTED,
+    TELEMETRY_FLAG_QUARANTINED, TELEMETRY_FLAG_SUMMARY_TICK_ACTIVE, TelemetryFrameError,
+    TypedReflectBridgeEntry, WitnessReflectSchema, flush_mod_telemetry_system,
+    fnv1a_64_hash_system, handle_mod_brp_request, handle_telemetry_brp_request,
+    install_bam_telemetry_brp_methods, install_mod_brp_methods, probe_summary_tick_tables,
+    process_pending_hot_reloads, reflect_entity_component, reflect_entity_component_mut,
+    reflect_resource_component, reflect_resource_component_mut,
+};
+
+#[cfg(feature = "sub-app-extract")]
+pub use bamabi_render::{
+    DEFAULT_MAX_CONSECUTIVE_RECOVERIES, DEFAULT_RECOVERY_WINDOW, ExtractedModMeshPipeline,
+    ExtractedModMeshPipelines, ModExtendedSpriteMaterial2d, ModExtendedSpriteMaterialSpec,
+    ModMaterialAppExt, ModMaterialError, ModMaterialParams, ModMaterialWorldExt,
+    ModMeshPipelineEntry, ModMeshPipelineId, ModMeshPipelineSpec, ModMeshShaderAppExt,
+    ModMeshShaderConfig, ModMeshShaderPlugin, ModMeshShaderRegistry, ModMeshShaderSubAppPlugin,
+    ModMeshShaderWorldExt, ModMeshStageSpec, ModRenderCacheInvalidationReport,
+    ModRenderRecoveryAppExt, ModRenderRecoveryHookFn, ModRenderRecoveryHooks,
+    ModRenderRecoveryOutcome, ModRenderRecoveryPlugin, ModRenderRecoveryPolicy,
+    ModRenderRecoveryRenderState, ModRenderRecoveryTelemetry, ModRenderRecoveryWorldExt,
+    ModShaderBufferInit, ModShaderBufferSpec, ModShaderDef, ModSpriteBindingKind,
+    ModSpriteExtension2d, ModSpriteMaterial, ModSpriteMaterialEntry, ModSpriteMaterialPlugin,
+    ModSpriteMaterialSpec, ModSpriteMeshAppExt, ModSpriteMeshBridgeRegistry, ModSpriteMeshWorldExt,
+    ModStandardMaterialEntry, ModStandardMaterialSpec, ModSubAppConfig, ModSubAppExt,
+    ModSubAppPlugin, ModSubAppSchedule, ModSubAppSystems, ModSubWorldExt, ModUnifiedSpriteSpec,
+    ModWeslExtendedMaterialEntry, ModWeslMaterialPlugin, ModWeslMaterialRegistry,
+    ModWeslSpriteExtension2d, ModWeslSpriteExtension2dKey, ModWeslSpriteExtensionEntry,
+    ModWeslSpriteExtensionSpec, ModWeslSpriteSpecialization, WeslShaderAssetSpec, WeslShaderSource,
+    apply_wesl_sprite_specialization, attach_mod_extended_material_2d_in_world,
+    attach_mod_sprite_material_in_world, build_quad_mesh_2d, cleanup_mod_mesh_pipelines_in_world,
+    cleanup_mod_sprite_mesh_bindings_in_world, cleanup_mod_wesl_materials_in_world,
+    detach_mod_extended_material_2d_in_world, detach_mod_sprite_material_in_world,
+    handle_mod_render_error_at, invalidate_mod_render_caches_in_render_world,
+    mod_render_error_handler, register_mod_custom_asset_in_world,
+    register_mod_extended_sprite_material_in_world, register_mod_mesh_pipeline_in_world,
+    register_mod_quad_mesh_in_world, register_mod_render_recovery_hook_in_world,
+    register_mod_shader_buffer_in_world, register_mod_sprite_material_in_world,
+    register_mod_standard_material_in_world, register_mod_wesl_extended_sprite_material_in_world,
+    register_mod_wesl_shader_in_world, register_mod_wesl_sprite_extension_in_world,
+    requeue_mod_2d_materials_after_render_startup, reset_mod_mesh_pipelines_on_render_startup,
+    reset_mod_sprite_materials_on_render_startup, resolve_wesl_sprite_specialization,
+    spawn_mod_extended_mesh_sprite_in_world, spawn_mod_sprite_with_material_in_world,
+    unregister_mod_mesh_pipeline_in_world, update_mod_extended_sprite_material_buffer_in_world,
+    update_mod_extended_sprite_material_params_in_world,
+    update_mod_extended_sprite_material_shaders_in_world, update_mod_shader_buffer_in_world,
+    update_mod_sprite_extension_params_in_world, update_mod_wesl_sprite_extension_buffer_in_world,
+    update_mod_wesl_sprite_extension_params_in_world,
+    update_mod_wesl_sprite_extension_shaders_in_world,
+};
+
+#[cfg(feature = "hot-reload-watcher")]
+pub use bamabi_watcher::{
+    ModHotReloadAction, ModHotReloadHistory, ModHotReloadOutcome, ModHotReloadPlugin,
+    ModHotReloadWatcher,
+};
+
+/// Convenient unified prelude re-exporting core host APIs plus all enabled bridge, preset, render,
+/// reflection, and hot-reload watcher extensions.
+pub mod prelude {
+    #[cfg(any(
+        feature = "bridge-std-types",
+        feature = "bridge-asset",
+        feature = "bridge-state",
+        feature = "bridge-bsn",
+        feature = "bridge-picking",
+        feature = "bridge-audio",
+        feature = "bridge-camera-2d",
+        feature = "bridge-light",
+        feature = "bridge-ui",
+        feature = "bridge-feathers",
+        feature = "bridge-camera-controller",
+        feature = "bridge-solari"
+    ))]
+    pub use bamabi_bridges::prelude::*;
+    pub use bamabi_host::prelude::*;
+    #[cfg(feature = "bridge-reflect")]
+    pub use bamabi_reflect::prelude::*;
+    #[cfg(feature = "sub-app-extract")]
+    pub use bamabi_render::prelude::*;
+    #[cfg(feature = "hot-reload-watcher")]
+    pub use bamabi_watcher::prelude::*;
+}

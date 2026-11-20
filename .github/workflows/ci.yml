@@ -1,0 +1,214 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ============================================================================
+  # 1. Quality Gates (Typos, Deny, Fmt, Safety, Clippy, Rustdoc, Isolation)
+  # ============================================================================
+  quality-gates:
+    name: Quality Gates & Static Audits
+    runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+    steps:
+      - name: Free disk space on Linux runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h
+
+      - name: Install Linux audio development headers (`alsa-sys`)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Spellcheck repository (`typos`)
+        uses: crate-ci/typos@v1.31.1
+
+      - name: Install `cargo-deny`
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: Audit advisories, licenses, bans & sources (`cargo-deny`)
+        run: cargo deny --all-features check advisories licenses bans sources
+
+      - name: Formatting, `#![forbid(unsafe_code)]` & Bevy idiom audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+
+          for safe_lib in \
+            crates/bamabi/src/lib.rs \
+            crates/bamabi_bridges/src/lib.rs \
+            crates/bamabi_render/src/lib.rs \
+            crates/bamabi_reflect/src/lib.rs; do
+            if ! grep -q '#!\[forbid(unsafe_code)\]' "$safe_lib"; then
+              echo "ERROR: $safe_lib is missing required #![forbid(unsafe_code)] declaration!"
+              exit 1
+            fi
+          done
+
+          if grep -rn '&mut ResMut<' crates/bamabi/src crates/bamabi_bridges/src crates/bamabi_render/src crates/bamabi_reflect/src; then
+            echo "ERROR: Found '&mut ResMut<' anti-pattern in Layer 3 sources!"
+            exit 1
+          fi
+
+      - name: Clippy across default, signature-verification, and all-features
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo clippy -p bamabi --features signature-verification --all-targets -- -D warnings
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Rustdoc build (default and all-features)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: |
+          cargo doc --workspace --no-deps
+          cargo doc --workspace --no-deps --all-features
+
+      - name: Feature isolation (`cargo tree`) & preset matrix (`cargo check`)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if cargo tree --edges normal -p bamabi_bridges --no-default-features | sed 's/ (.*//' | grep -E 'bevy_render|bevy_pbr|bevy_light|bevy_feathers|bevy_solari'; then
+            echo "ERROR: Default bamabi_bridges leaked heavy Bevy render dependency!"
+            exit 1
+          fi
+          if cargo tree --edges normal -p bamabi --no-default-features --features preset-2d | sed 's/ (.*//' | grep -E 'bevy_pbr|bevy_light|bevy_solari|bevy_camera_controller'; then
+            echo "ERROR: preset-2d leaked heavy 3D dependency!"
+            exit 1
+          fi
+          if cargo tree --edges normal -p bamabi --no-default-features | sed 's/ (.*//' | grep -E 'bevy_render|bevy_reflect|bevy_scene|bevy_asset|\bnotify\b'; then
+            echo "ERROR: Default bamabi leaked heavy Bevy or notify dependency!"
+            exit 1
+          fi
+          cargo check -p bamabi --no-default-features --features preset-2d
+          cargo check -p bamabi --no-default-features --features preset-3d
+          cargo check -p bamabi --no-default-features --features preset-ui
+          cargo check -p bamabi --no-default-features --features preset-full
+          cargo check -p bamabi --no-default-features --features bridge-camera-2d
+          cargo check -p bamabi_bridges --no-default-features --features bridge-camera-2d
+
+  # ============================================================================
+  # 2. Cross-OS Test Matrix (default, signature-verification, all-features, doc)
+  # ============================================================================
+  test-matrix:
+    name: Test Matrix (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Free disk space on Linux runner
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h
+
+      - name: Install Linux audio development headers (`alsa-sys`)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Initialize MSVC Developer Environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Layer 3 test suites (default, signature-verification, all-features, doctests)
+        shell: bash
+        env:
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          set -euo pipefail
+          if [ -n "${VCToolsInstallDir:-}" ] && command -v cygpath >/dev/null 2>&1; then
+            MSVC_BIN="$(cygpath -u "${VCToolsInstallDir}bin/Hostx64/x64")"
+            if [ -x "${MSVC_BIN}/link.exe" ]; then
+              export PATH="${MSVC_BIN}:${PATH}"
+            fi
+          fi
+          cargo test --workspace
+          cargo test -p bamabi --features signature-verification
+          cargo test -p bamabi --test bridges_integration --features "bridge-std-types,bridge-asset,bridge-state,bridge-bsn,bridge-reflect"
+          cargo test --workspace --all-features
+          cargo test --doc --all-features
+
+  # ============================================================================
+  # 3. Line Coverage Report (`cargo-llvm-cov`)
+  # ============================================================================
+  coverage:
+    name: Coverage (cargo-llvm-cov)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+    steps:
+      - name: Free disk space on Linux runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h
+
+      - name: Install Linux audio development headers (`alsa-sys`)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install stable Rust with `llvm-tools-preview`
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install `cargo-llvm-cov`
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: llvm-cov
+
+      - name: Measure Layer 3 workspace line coverage
+        run: |
+          cargo llvm-cov --no-report --workspace --all-features
+          cargo llvm-cov report \
+            --ignore-filename-regex '(tests|examples|benches)/|\.cargo/' \
+            --summary-only

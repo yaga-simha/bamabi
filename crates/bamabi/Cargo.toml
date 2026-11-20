@@ -1,0 +1,143 @@
+[package]
+name = "bamabi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Canonical Bevy host facade for zero-serialization, asymmetric C-ABI native modding (`ABI 0.3.0`)"
+readme = "README.md"
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+strict-ffi-checks = ["bamabi_host/strict-ffi-checks"]
+diagnostics = ["bamabi_host/diagnostics"]
+signature-verification = ["bamabi_host/signature-verification"]
+hot-reload-watcher = ["dep:bamabi_watcher"]
+bridge-std-types = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/bridge-std-types",
+]
+bridge-asset = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/bridge-asset",
+]
+bridge-state = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/bridge-state",
+]
+bridge-reflect = ["dep:bamabi_reflect"]
+bridge-bsn = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/bridge-bsn",
+    "bridge-asset",
+]
+sub-app-extract = [
+    "dep:bamabi_render",
+    "bridge-asset",
+]
+bridge-picking = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/bridge-picking",
+]
+bridge-audio = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/bridge-audio",
+    "bridge-asset",
+]
+bridge-camera-2d = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/bridge-camera-2d",
+]
+bridge-light = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/bridge-light",
+    "bridge-camera-2d",
+]
+bridge-ui = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/bridge-ui",
+]
+bridge-feathers = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/bridge-feathers",
+    "bridge-ui",
+]
+bridge-camera-controller = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/bridge-camera-controller",
+]
+bridge-solari = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/bridge-solari",
+]
+
+# Curated bridge presets
+preset-2d = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/preset-2d",
+    "bridge-std-types",
+    "bridge-asset",
+    "bridge-state",
+    "bridge-picking",
+    "bridge-audio",
+    "bridge-camera-2d",
+    "bridge-ui",
+]
+preset-3d = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/preset-3d",
+    "preset-2d",
+    "bridge-light",
+    "bridge-camera-controller",
+    "bridge-bsn",
+]
+preset-ui = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/preset-ui",
+    "bridge-std-types",
+    "bridge-asset",
+    "bridge-picking",
+    "bridge-ui",
+    "bridge-feathers",
+]
+preset-full = [
+    "dep:bamabi_bridges",
+    "bamabi_bridges/preset-full",
+    "preset-3d",
+    "preset-ui",
+    "bridge-solari",
+]
+
+[dependencies]
+bamabi_sys = { workspace = true }
+bamabi_host = { workspace = true }
+bamabi_macros = { workspace = true }
+bamabi_bridges = { workspace = true, optional = true }
+bamabi_render = { workspace = true, optional = true }
+bamabi_reflect = { workspace = true, optional = true }
+bamabi_watcher = { workspace = true, optional = true }
+
+[dev-dependencies]
+bevy_app = { workspace = true }
+bevy_asset = { workspace = true }
+bevy_camera = { workspace = true }
+bevy_ecs = { workspace = true }
+bevy_input = { workspace = true }
+bevy_reflect = { workspace = true }
+bevy_remote = { workspace = true }
+bevy_scene = { workspace = true }
+bevy_state = { workspace = true }
+bevy_time = { workspace = true }
+bevy_transform = { workspace = true }
+serde_json = { workspace = true }
+
+[[test]]
+name = "bridges_integration"
+path = "tests/bridges_integration.rs"
+required-features = ["bridge-std-types", "bridge-asset", "bridge-state"]
