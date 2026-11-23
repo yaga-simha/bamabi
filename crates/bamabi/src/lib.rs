@@ -324,10 +324,10 @@ pub mod bridges {
         SystemExecutionSample, SystemMetricSnapshot, SystemTelemetryDigest64,
         SystemTelemetryMetrics, TELEMETRY_FLAG_BUDGET_BREACHED, TELEMETRY_FLAG_FAULTED,
         TELEMETRY_FLAG_QUARANTINED, TELEMETRY_FLAG_SUMMARY_TICK_ACTIVE, TelemetryFrameError,
-        TypedReflectBridgeEntry, WitnessReflectSchema, flush_mod_telemetry_system,
-        fnv1a_64_hash_system, handle_mod_brp_request, handle_telemetry_brp_request,
-        install_bam_telemetry_brp_methods, install_mod_brp_methods, probe_summary_tick_tables,
-        process_pending_hot_reloads, reflect, savegame, telemetry,
+        TelemetrySliceError, TypedReflectBridgeEntry, WitnessReflectSchema,
+        flush_mod_telemetry_system, fnv1a_64_hash_system, handle_mod_brp_request,
+        handle_telemetry_brp_request, install_bam_telemetry_brp_methods, install_mod_brp_methods,
+        probe_summary_tick_tables, process_pending_hot_reloads, reflect, savegame, telemetry,
     };
 }
 
@@ -443,7 +443,7 @@ pub use bamabi_reflect::{
     SummaryTickTableStats, SystemExecutionSample, SystemMetricSnapshot, SystemTelemetryDigest64,
     SystemTelemetryMetrics, TELEMETRY_FLAG_BUDGET_BREACHED, TELEMETRY_FLAG_FAULTED,
     TELEMETRY_FLAG_QUARANTINED, TELEMETRY_FLAG_SUMMARY_TICK_ACTIVE, TelemetryFrameError,
-    TypedReflectBridgeEntry, WitnessReflectSchema, flush_mod_telemetry_system,
+    TelemetrySliceError, TypedReflectBridgeEntry, WitnessReflectSchema, flush_mod_telemetry_system,
     fnv1a_64_hash_system, handle_mod_brp_request, handle_telemetry_brp_request,
     install_bam_telemetry_brp_methods, install_mod_brp_methods, probe_summary_tick_tables,
     process_pending_hot_reloads, reflect_entity_component, reflect_entity_component_mut,

@@ -139,6 +139,7 @@ fn umbrella_reflect_savegame_telemetry_reexports_work() {
     let _behavior: EphemeralHandleBehavior = EphemeralHandleBehavior::Warn;
     let _ = core::any::type_name::<bamabi::ModTelemetryPlugin>();
     let _ = core::any::type_name::<bamabi::telemetry::SystemTelemetryDigest64>();
+    let _ = core::any::type_name::<bamabi::TelemetrySliceError>();
 }
 
 #[cfg(feature = "sub-app-extract")]

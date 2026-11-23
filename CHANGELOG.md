@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **Layer-0 Telemetry Wire Deduplication (`bamabi_reflect::telemetry`):** Replaced duplicated telemetry wire constants, `SystemTelemetryDigest64`, `TelemetryFrameError`, and `fnv1a_64_hash_system` definitions with canonical re-exports from Layer-0 `bamabi_sys` (`b"BAMT"` magic, `SYSTEM_TELEMETRY_*`, `BRP_METHOD_BAM_*`, `TelemetryFrameError`, and `TelemetrySliceError`).
+- **73-Slot ABI `0.3.0` Lockfile Parity:** Refreshed `Cargo.lock` against upstream 73-slot ABI `0.3.0` (`592` B 64-bit / `300` B 32-bit, `MAX_QUERIES_PER_SYSTEM = 16`, Slots `68..=72`) in `bamabi-wire`, `bamabi-tools`, and `bamabi-core`.
+
+---
+
 ## [0.3.0] - 2026-11-19
 
 ### Added

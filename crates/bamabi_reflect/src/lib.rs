@@ -45,8 +45,9 @@ pub use telemetry::{
     SummaryTickTableStats, SystemExecutionSample, SystemMetricSnapshot, SystemTelemetryDigest64,
     SystemTelemetryMetrics, TELEMETRY_FLAG_BUDGET_BREACHED, TELEMETRY_FLAG_FAULTED,
     TELEMETRY_FLAG_QUARANTINED, TELEMETRY_FLAG_SUMMARY_TICK_ACTIVE, TelemetryFrameError,
-    flush_mod_telemetry_system, fnv1a_64_hash_system, handle_telemetry_brp_request,
-    install_bam_telemetry_brp_methods, probe_summary_tick_tables, process_pending_hot_reloads,
+    TelemetrySliceError, flush_mod_telemetry_system, fnv1a_64_hash_system,
+    handle_telemetry_brp_request, install_bam_telemetry_brp_methods, probe_summary_tick_tables,
+    process_pending_hot_reloads,
 };
 
 /// Convenient prelude re-exporting reflection, BRP, settings, save-game persistence, and live
@@ -66,6 +67,6 @@ pub mod prelude {
         HotReloadOutcome, HotReloadRequest, ModHotReloadQueue, ModTelemetryEndpoint,
         ModTelemetryPlugin, ModTelemetryRecorder, ModTelemetryRemoteExt, ModTelemetryTransport,
         ModTelemetryWorldExt, SummaryTickTableStats, SystemExecutionSample, SystemMetricSnapshot,
-        SystemTelemetryDigest64, SystemTelemetryMetrics, TelemetryFrameError,
+        SystemTelemetryDigest64, SystemTelemetryMetrics, TelemetryFrameError, TelemetrySliceError,
     };
 }
