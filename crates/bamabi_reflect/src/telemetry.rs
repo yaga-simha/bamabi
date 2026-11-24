@@ -23,10 +23,9 @@
 //!   non-blocking loopback [`std::net::TcpListener`] (`127.0.0.1:<port>`), avoiding raw Win32
 //!   named-pipe FFI while preserving identical 64-byte binary frame semantics.
 
-use crate::savegame::format_component_uuid;
 use bamabi_host::{
-    LoadOptions, LoadedModInfo, ModBudgetTelemetry, ModHost, ModId, ModQuarantine, ModRegistry,
-    ModWorldExt,
+    LoadOptions, LoadedModInfo, ModBudgetSnapshot, ModBudgetTelemetry, ModHost, ModId,
+    ModQuarantine, ModRegistry, ModWorldExt,
 };
 use bamabi_host_sys::{
     inspect_component_bam_fields, inspect_component_witness_fields,
@@ -59,11 +58,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 pub use bamabi_sys::{
-    BRP_METHOD_BAM_COMPONENT_SCHEMAS, BRP_METHOD_BAM_HOT_RELOAD, BRP_METHOD_BAM_LIST_MODS,
-    BRP_METHOD_BAM_SYSTEM_METRICS, SYSTEM_TELEMETRY_DIGEST_SIZE, SYSTEM_TELEMETRY_DIGEST_VERSION,
-    SYSTEM_TELEMETRY_MAGIC, SystemTelemetryDigest64, TELEMETRY_FLAG_BUDGET_BREACHED,
-    TELEMETRY_FLAG_FAULTED, TELEMETRY_FLAG_QUARANTINED, TELEMETRY_FLAG_SUMMARY_TICK_ACTIVE,
-    TelemetryFrameError, TelemetrySliceError, fnv1a_64_hash_system,
+    ABI_VERSION, BRP_METHOD_BAM_COMPONENT_SCHEMAS, BRP_METHOD_BAM_HOT_RELOAD,
+    BRP_METHOD_BAM_LIST_MODS, BRP_METHOD_BAM_SYSTEM_METRICS, BrpComponentSchema, BrpFieldSchema,
+    BrpHotReloadRequest, BrpModInfo, BrpSystemMetrics, SYSTEM_TELEMETRY_DIGEST_SIZE,
+    SYSTEM_TELEMETRY_DIGEST_VERSION, SYSTEM_TELEMETRY_MAGIC, ScheduleId, SystemTelemetryDigest64,
+    TELEMETRY_FLAG_BUDGET_BREACHED, TELEMETRY_FLAG_FAULTED, TELEMETRY_FLAG_QUARANTINED,
+    TELEMETRY_FLAG_SUMMARY_TICK_ACTIVE, TelemetryFrameError, TelemetrySliceError,
+    fnv1a_64_hash_system,
 };
 
 const DEFAULT_PERCENTILE_WINDOW: usize = 128;
@@ -227,39 +228,68 @@ pub struct SystemTelemetryMetrics {
 }
 
 impl SystemTelemetryMetrics {
+    /// Converts this metric record into a headless [`ModBudgetSnapshot`].
+    #[must_use]
+    pub fn to_budget_snapshot(&self) -> ModBudgetSnapshot {
+        ModBudgetSnapshot {
+            mod_id: (self.mod_id != 0).then_some(ModId(self.mod_id)),
+            mod_name: self.mod_name.clone(),
+            system_name: self.system_name.clone(),
+            p50_us: self.p50_us,
+            p99_us: self.p99_us,
+            last_duration_us: self.last_duration_us,
+            matched_entities: self.matched_entities,
+            matched_tables: self.matched_tables,
+            skipped_summary_tick_tables: self.skipped_summary_tick_tables,
+            chunks_yielded: usize::try_from(self.chunks).unwrap_or(usize::MAX),
+            commands_queued: usize::try_from(self.commands_queued).unwrap_or(usize::MAX),
+            arena_bytes_peak: 0,
+            spawns_last_frame: 0,
+            breach_count: u64::from(self.budget_breached),
+            consecutive_p99_breaches: u32::from(self.budget_breached),
+            quarantined: self.quarantined,
+        }
+    }
+
     /// Converts this metric record into a fixed 64-byte [`SystemTelemetryDigest64`] frame stamped
-    /// with `frame_seq`.
+    /// with `frame_seq` via [`ModBudgetSnapshot::to_telemetry_digest64`].
     #[must_use]
     pub fn to_digest64(&self, frame_seq: u64) -> SystemTelemetryDigest64 {
-        let mut flags = 0u16;
-        if self.quarantined {
-            flags |= TELEMETRY_FLAG_QUARANTINED;
-        }
-        if self.faulted {
-            flags |= TELEMETRY_FLAG_FAULTED;
-        }
-        if self.skipped_summary_tick_tables > 0 {
-            flags |= TELEMETRY_FLAG_SUMMARY_TICK_ACTIVE;
-        }
-        if self.budget_breached {
-            flags |= TELEMETRY_FLAG_BUDGET_BREACHED;
-        }
-        SystemTelemetryDigest64 {
-            magic: SYSTEM_TELEMETRY_MAGIC,
-            version: SYSTEM_TELEMETRY_DIGEST_VERSION,
-            flags,
-            mod_id: self.mod_id,
-            system_hash: self.system_hash,
-            frame_seq,
-            matched_entities: u32::try_from(self.matched_entities).unwrap_or(u32::MAX),
-            matched_tables: u32::try_from(self.matched_tables).unwrap_or(u32::MAX),
-            skipped_summary_tick_tables: u32::try_from(self.skipped_summary_tick_tables)
-                .unwrap_or(u32::MAX),
-            chunks: u32::try_from(self.chunks).unwrap_or(u32::MAX),
-            p50_us: u32::try_from(self.p50_us).unwrap_or(u32::MAX),
-            p99_us: u32::try_from(self.p99_us).unwrap_or(u32::MAX),
-            commands_queued: u32::try_from(self.commands_queued).unwrap_or(u32::MAX),
-            reserved: 0,
+        let extra_flags = if self.faulted {
+            TELEMETRY_FLAG_FAULTED
+        } else {
+            0
+        };
+        let mut digest = self.to_budget_snapshot().to_telemetry_digest64(
+            &self.mod_name,
+            &self.system_name,
+            ScheduleId::UPDATE,
+            extra_flags,
+        );
+        digest.frame_seq = frame_seq;
+        digest.system_hash = self.system_hash;
+        digest
+    }
+
+    /// Converts this metric record into a canonical [`BrpSystemMetrics`] BRP DTO stamped with
+    /// `frame_seq`.
+    #[must_use]
+    pub fn to_brp_dto(&self, frame_seq: u64) -> BrpSystemMetrics {
+        let digest = self.to_digest64(frame_seq);
+        BrpSystemMetrics {
+            mod_id: digest.mod_id,
+            mod_name: self.mod_name.clone(),
+            system_name: self.system_name.clone(),
+            system_hash: digest.system_hash,
+            frame_seq: digest.frame_seq,
+            matched_entities: digest.matched_entities,
+            matched_tables: digest.matched_tables,
+            skipped_summary_tick_tables: digest.skipped_summary_tick_tables,
+            chunks: digest.chunks,
+            p50_us: digest.p50_us,
+            p99_us: digest.p99_us,
+            commands_queued: digest.commands_queued,
+            flags: digest.flags,
         }
     }
 }
@@ -1192,6 +1222,9 @@ impl Plugin for ModTelemetryPlugin {
             app.insert_resource(ModTelemetryRecorder::new(self.percentile_window));
         }
         app.init_resource::<ModHotReloadQueue>();
+        if let Some(telemetry) = app.world().get_resource::<ModBudgetTelemetry>() {
+            telemetry.set_observing(true);
+        }
         if let Some(ref transport) = self.endpoint
             && !app.world().contains_resource::<ModTelemetryEndpoint>()
             && let Ok(endpoint) = ModTelemetryEndpoint::bind(transport.clone())
@@ -1205,6 +1238,9 @@ impl Plugin for ModTelemetryPlugin {
     }
 
     fn finish(&self, app: &mut App) {
+        if let Some(telemetry) = app.world().get_resource::<ModBudgetTelemetry>() {
+            telemetry.set_observing(true);
+        }
         if app.world().contains_resource::<RemoteMethods>() {
             install_bam_telemetry_brp_methods(app.world_mut());
         }
@@ -1413,10 +1449,40 @@ fn discover_world_mods(world: &World) -> Vec<DiscoveredModSummary> {
     by_id.into_values().collect()
 }
 
+#[derive(Serialize)]
+struct BrpListModsEntry {
+    #[serde(flatten)]
+    dto: BrpModInfo,
+    path: Option<String>,
+    is_active: bool,
+    quarantined_systems: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct BrpSystemMetricsEntry {
+    #[serde(flatten)]
+    dto: BrpSystemMetrics,
+    last_duration_us: u64,
+    sample_count: u64,
+    quarantined: bool,
+    faulted: bool,
+    budget_breached: bool,
+}
+
 fn brp_bam_list_mods_impl(world: &World, _params: Option<&Value>) -> BrpResult {
     let mods = discover_world_mods(world);
     let mut quarantined_by_mod: HashMap<u64, Vec<String>> = HashMap::default();
     let mut total_quarantined_systems = 0usize;
+    let mut component_counts_by_mod: HashMap<u64, u32> = HashMap::default();
+
+    if let Some(registry) = world.get_resource::<ModRegistry>() {
+        for entry in registry.snapshot().entries() {
+            if let Some(owner) = entry.owner {
+                let count = component_counts_by_mod.entry(owner.0).or_insert(0);
+                *count = count.saturating_add(1);
+            }
+        }
+    }
 
     if let Some(quarantine) = world.get_resource::<ModQuarantine>() {
         for (mod_id, sys_name) in quarantine.quarantined_systems() {
@@ -1437,17 +1503,25 @@ fn brp_bam_list_mods_impl(world: &World, _params: Option<&Value>) -> BrpResult {
             .get(&m.mod_id)
             .cloned()
             .unwrap_or_default();
-        items.push(serde_json::json!({
-            "mod_id": m.mod_id,
-            "name": m.name,
-            "version": m.version,
-            "path": m.path,
-            "system_count": m.system_count,
-            "fault_count": m.fault_count,
-            "is_active": m.is_active,
-            "quarantined": !q_systems.is_empty(),
-            "quarantined_systems": q_systems,
-        }));
+        let component_count = component_counts_by_mod.get(&m.mod_id).copied().unwrap_or(0);
+        let entry = BrpListModsEntry {
+            dto: BrpModInfo {
+                mod_id: m.mod_id,
+                name: m.name.clone(),
+                version: m.version.clone(),
+                abi_version: ABI_VERSION,
+                system_count: u32::try_from(m.system_count).unwrap_or(u32::MAX),
+                component_count,
+                fault_count: u32::try_from(m.fault_count).unwrap_or(u32::MAX),
+                quarantined: !q_systems.is_empty(),
+            },
+            path: Some(m.path.clone()),
+            is_active: m.is_active,
+            quarantined_systems: q_systems,
+        };
+        let json = serde_json::to_value(entry)
+            .map_err(|err| brp_err(error_codes::INTERNAL_ERROR, err.to_string()))?;
+        items.push(json);
     }
 
     Ok(serde_json::json!({
@@ -1484,32 +1558,25 @@ fn brp_bam_system_metrics_impl(world: &mut World, params: Option<&Value>) -> Brp
         .map(|rec| (rec.frame_seq(), rec.system_metrics()))
         .unwrap_or_else(|| (0, Vec::new()));
 
-    let filtered: Vec<Value> = metrics
+    let mut filtered = Vec::new();
+    for m in metrics
         .into_iter()
         .filter(|m| filter_mod_id.is_none_or(|id| m.mod_id == id))
         .filter(|m| filter_mod_name.is_none_or(|name| m.mod_name == name))
         .filter(|m| filter_sys_name.is_none_or(|sys| m.system_name == sys))
-        .map(|m| {
-            serde_json::json!({
-                "mod_id": m.mod_id,
-                "mod_name": m.mod_name,
-                "system_name": m.system_name,
-                "system_hash": m.system_hash,
-                "matched_entities": m.matched_entities,
-                "matched_tables": m.matched_tables,
-                "skipped_summary_tick_tables": m.skipped_summary_tick_tables,
-                "p50_us": m.p50_us,
-                "p99_us": m.p99_us,
-                "last_duration_us": m.last_duration_us,
-                "chunks": m.chunks,
-                "commands_queued": m.commands_queued,
-                "sample_count": m.sample_count,
-                "quarantined": m.quarantined,
-                "faulted": m.faulted,
-                "budget_breached": m.budget_breached,
-            })
-        })
-        .collect();
+    {
+        let entry = BrpSystemMetricsEntry {
+            dto: m.to_brp_dto(frame_seq),
+            last_duration_us: m.last_duration_us,
+            sample_count: m.sample_count,
+            quarantined: m.quarantined,
+            faulted: m.faulted,
+            budget_breached: m.budget_breached,
+        };
+        let json = serde_json::to_value(entry)
+            .map_err(|err| brp_err(error_codes::INTERNAL_ERROR, err.to_string()))?;
+        filtered.push(json);
+    }
 
     Ok(serde_json::json!({
         "frame_seq": frame_seq,
@@ -1553,60 +1620,99 @@ fn brp_bam_component_schemas_impl(world: &World, params: Option<&Value>) -> BrpR
             continue;
         }
 
-        let fields_json: Vec<Value> = if let Ok(Some(bam_fields)) =
-            inspect_component_bam_fields(world, entry.handle)
-        {
-            bam_fields
-                .into_iter()
-                .map(|f| {
-                    serde_json::json!({
-                        "index": f.index,
-                        "name": f.name,
-                        "type_tag": f.type_tag,
-                        "kind": f.kind.0,
-                        "kind_name": format!("{:?}", f.kind),
-                        "pod_kind": f.pod_kind.map(|pk| format!("{pk:?}")),
-                        "offset": f.offset,
-                        "size": f.size,
-                        "align": f.align,
-                        "is_inplace_reflectable": f.is_inplace_reflectable,
-                    })
-                })
-                .collect()
+        let mut dto_fields: Vec<BrpFieldSchema> = Vec::new();
+        let mut fields_json: Vec<Value> = Vec::new();
+        if let Ok(Some(bam_fields)) = inspect_component_bam_fields(world, entry.handle) {
+            for f in bam_fields {
+                let dto_field = BrpFieldSchema {
+                    name: f.name,
+                    type_tag: f.type_tag,
+                    kind: f.kind.0,
+                    offset: f.offset,
+                    size: f.size,
+                    align: f.align,
+                };
+                let mut field_val = serde_json::to_value(&dto_field)
+                    .map_err(|err| brp_err(error_codes::INTERNAL_ERROR, err.to_string()))?;
+                if let Some(obj) = field_val.as_object_mut() {
+                    obj.insert("index".to_owned(), Value::from(f.index));
+                    obj.insert(
+                        "kind_name".to_owned(),
+                        Value::String(format!("{:?}", f.kind)),
+                    );
+                    obj.insert(
+                        "pod_kind".to_owned(),
+                        match f.pod_kind {
+                            Some(pk) => Value::String(format!("{pk:?}")),
+                            None => Value::Null,
+                        },
+                    );
+                    obj.insert(
+                        "is_inplace_reflectable".to_owned(),
+                        Value::Bool(f.is_inplace_reflectable),
+                    );
+                }
+                dto_fields.push(dto_field);
+                fields_json.push(field_val);
+            }
         } else if let Some(witness_fields) = inspect_component_witness_fields(world, entry.handle)
             .or_else(|| inspect_component_witness_fields_in_registry(registry, entry.handle))
         {
-            witness_fields
-                .into_iter()
-                .map(|f| {
-                    serde_json::json!({
-                        "index": f.index,
-                        "name": f.name,
-                        "type_tag": f.type_tag,
-                        "offset": f.offset,
-                    })
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+            for f in witness_fields {
+                let dto_field = BrpFieldSchema {
+                    name: f.name,
+                    type_tag: f.type_tag,
+                    kind: bamabi_sys::BamFieldKind::UNKNOWN.0,
+                    offset: f.offset,
+                    size: 0,
+                    align: 1,
+                };
+                let mut field_val = serde_json::to_value(&dto_field)
+                    .map_err(|err| brp_err(error_codes::INTERNAL_ERROR, err.to_string()))?;
+                if let Some(obj) = field_val.as_object_mut() {
+                    obj.insert("index".to_owned(), Value::from(f.index));
+                }
+                dto_fields.push(dto_field);
+                fields_json.push(field_val);
+            }
+        }
 
-        schemas.push(serde_json::json!({
-            "handle": entry.handle.0,
-            "name": entry.name.as_ref(),
-            "uuid": format_component_uuid(entry.uuid),
-            "size": entry.size,
-            "align": entry.align,
-            "schema_fingerprint": entry.schema_fingerprint,
-            "is_abi_pod": entry.is_abi_pod,
-            "is_dynamic": entry.is_dynamic,
-            "is_resource": entry.is_resource(),
-            "is_immutable": entry.is_immutable(),
-            "is_sparse_set": entry.is_sparse_set(),
-            "is_summary_tick": entry.is_summary_tick(),
-            "owner_mod_id": entry.owner.map(|id| id.0),
-            "fields": fields_json,
-        }));
+        let dto = BrpComponentSchema {
+            canonical_name: entry.name.to_string(),
+            uuid: entry.uuid,
+            schema_fingerprint: entry.schema_fingerprint,
+            size: entry.size,
+            align: entry.align,
+            storage_flags: entry.storage_flags,
+            fields: dto_fields,
+        };
+        let mut schema_val = serde_json::to_value(&dto)
+            .map_err(|err| brp_err(error_codes::INTERNAL_ERROR, err.to_string()))?;
+        if let Some(obj) = schema_val.as_object_mut() {
+            obj.insert("handle".to_owned(), Value::from(entry.handle.0));
+            obj.insert("name".to_owned(), Value::String(entry.name.to_string()));
+            obj.insert("is_abi_pod".to_owned(), Value::Bool(entry.is_abi_pod));
+            obj.insert("is_dynamic".to_owned(), Value::Bool(entry.is_dynamic));
+            obj.insert("is_resource".to_owned(), Value::Bool(entry.is_resource()));
+            obj.insert("is_immutable".to_owned(), Value::Bool(entry.is_immutable()));
+            obj.insert(
+                "is_sparse_set".to_owned(),
+                Value::Bool(entry.is_sparse_set()),
+            );
+            obj.insert(
+                "is_summary_tick".to_owned(),
+                Value::Bool(entry.is_summary_tick()),
+            );
+            obj.insert(
+                "owner_mod_id".to_owned(),
+                match entry.owner {
+                    Some(id) => Value::from(id.0),
+                    None => Value::Null,
+                },
+            );
+            obj.insert("fields".to_owned(), Value::Array(fields_json));
+        }
+        schemas.push(schema_val);
     }
 
     Ok(serde_json::json!({
@@ -1621,30 +1727,42 @@ fn brp_bam_hot_reload_impl(world: &mut World, params: Option<&Value>) -> BrpResu
             "missing params: expected `mod_id` or `mod_name`",
         )
     })?;
-    let requested_id = params.get("mod_id").and_then(Value::as_u64);
-    let requested_name = params
+    let dto_req = serde_json::from_value::<BrpHotReloadRequest>(params.clone()).unwrap_or(
+        BrpHotReloadRequest {
+            mod_id: params.get("mod_id").and_then(Value::as_u64),
+            mod_name: None,
+            path: None,
+            force: false,
+        },
+    );
+    let requested_id = dto_req.mod_id;
+    let fallback_name = params
         .get("mod_name")
         .or_else(|| params.get("name"))
-        .and_then(Value::as_str);
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let requested_name = dto_req.mod_name.or(fallback_name);
     if requested_id.is_none() && requested_name.is_none() {
         return Err(brp_err(
             error_codes::INVALID_PARAMS,
             "expected `mod_id` (u64) or `mod_name` / `name` (string)",
         ));
     }
-    let override_path = params
-        .get("path")
-        .and_then(Value::as_str)
+    let override_path = dto_req
+        .path
+        .as_deref()
+        .or_else(|| params.get("path").and_then(Value::as_str))
         .map(PathBuf::from);
-    let immediate = params
-        .get("immediate")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let immediate = dto_req.force
+        || params
+            .get("immediate")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
     let mods = discover_world_mods(world);
     let target = mods.into_iter().find(|m| {
         let id_ok = requested_id.is_none_or(|id| m.mod_id == id);
-        let name_ok = requested_name.is_none_or(|name| m.name == name);
+        let name_ok = requested_name.as_deref().is_none_or(|name| m.name == name);
         id_ok && name_ok
     });
     let Some(target) = target else {

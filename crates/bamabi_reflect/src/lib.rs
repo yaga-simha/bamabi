@@ -3,10 +3,10 @@
 
 //! Safe (`#![forbid(unsafe_code)]`) dynamic `bevy_reflect`, Bevy Remote Protocol (`bevy_remote`
 //! BRP), `bevy_settings` TOML, versioned save-game persistence (`ModSaveGamePlugin`), and live
-//! `bql_lsp` / BRP telemetry (`ModTelemetryPlugin`) bridges for `bamabi` (`ABI 0.3.0`, Layer 3
+//! `bql_lsp` / BRP telemetry (`ModTelemetryPlugin`) bridges for `bamabi` (`ABI 0.4.0`, Layer 3
 //! in `https://github.com/yaga-simha/bamabi`, re-exported via `bridge-reflect`).
 //!
-//! Exposes both witness-backed and declarative ABI `0.3` `BamFieldDesc` components and singleton
+//! Exposes both witness-backed and declarative ABI `0.4` `BamFieldDesc` components and singleton
 //! resources to Bevy's reflection registry (`AppTypeRegistry` / `ReflectFromPtr`), JSON-RPC
 //! remote inspection/mutation (`bamabi/*`, `bam/*`, and standard `world.*` BRP methods),
 //! persistent TOML settings files, persistent (`!ModScoped`) entity save archives with recovery
@@ -38,14 +38,15 @@ pub use savegame::{
 };
 pub use telemetry::{
     BRP_METHOD_BAM_COMPONENT_SCHEMAS, BRP_METHOD_BAM_HOT_RELOAD, BRP_METHOD_BAM_LIST_MODS,
-    BRP_METHOD_BAM_SYSTEM_METRICS, CustomHotReloadHandler, HotReloadOutcome, HotReloadRequest,
+    BRP_METHOD_BAM_SYSTEM_METRICS, BrpComponentSchema, BrpFieldSchema, BrpHotReloadRequest,
+    BrpModInfo, BrpSystemMetrics, CustomHotReloadHandler, HotReloadOutcome, HotReloadRequest,
     ModHotReloadQueue, ModTelemetryEndpoint, ModTelemetryPlugin, ModTelemetryRecorder,
     ModTelemetryRemoteExt, ModTelemetryTransport, ModTelemetryWorldExt,
     SYSTEM_TELEMETRY_DIGEST_SIZE, SYSTEM_TELEMETRY_DIGEST_VERSION, SYSTEM_TELEMETRY_MAGIC,
-    SummaryTickTableStats, SystemExecutionSample, SystemMetricSnapshot, SystemTelemetryDigest64,
-    SystemTelemetryMetrics, TELEMETRY_FLAG_BUDGET_BREACHED, TELEMETRY_FLAG_FAULTED,
-    TELEMETRY_FLAG_QUARANTINED, TELEMETRY_FLAG_SUMMARY_TICK_ACTIVE, TelemetryFrameError,
-    TelemetrySliceError, flush_mod_telemetry_system, fnv1a_64_hash_system,
+    ScheduleId, SummaryTickTableStats, SystemExecutionSample, SystemMetricSnapshot,
+    SystemTelemetryDigest64, SystemTelemetryMetrics, TELEMETRY_FLAG_BUDGET_BREACHED,
+    TELEMETRY_FLAG_FAULTED, TELEMETRY_FLAG_QUARANTINED, TELEMETRY_FLAG_SUMMARY_TICK_ACTIVE,
+    TelemetryFrameError, TelemetrySliceError, flush_mod_telemetry_system, fnv1a_64_hash_system,
     handle_telemetry_brp_request, install_bam_telemetry_brp_methods, probe_summary_tick_tables,
     process_pending_hot_reloads,
 };
@@ -64,9 +65,11 @@ pub mod prelude {
         ModSaveWorldExt, SavedComponentFormat, SavedComponentHeader, SavedComponentPayload,
     };
     pub use crate::telemetry::{
+        BrpComponentSchema, BrpFieldSchema, BrpHotReloadRequest, BrpModInfo, BrpSystemMetrics,
         HotReloadOutcome, HotReloadRequest, ModHotReloadQueue, ModTelemetryEndpoint,
         ModTelemetryPlugin, ModTelemetryRecorder, ModTelemetryRemoteExt, ModTelemetryTransport,
-        ModTelemetryWorldExt, SummaryTickTableStats, SystemExecutionSample, SystemMetricSnapshot,
-        SystemTelemetryDigest64, SystemTelemetryMetrics, TelemetryFrameError, TelemetrySliceError,
+        ModTelemetryWorldExt, ScheduleId, SummaryTickTableStats, SystemExecutionSample,
+        SystemMetricSnapshot, SystemTelemetryDigest64, SystemTelemetryMetrics, TelemetryFrameError,
+        TelemetrySliceError,
     };
 }

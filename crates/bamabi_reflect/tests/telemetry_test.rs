@@ -801,3 +801,176 @@ fn mod_budget_telemetry_syncs_automatically_into_telemetry_recorder_and_brp() {
     drop(app);
     drop(runs);
 }
+
+#[test]
+fn brp_serde_dtos_hyphenated_uuid_and_digest64_builder_roundtrip() {
+    use bamabi_sys::{
+        ABI_VERSION, BamComponent, BrpComponentSchema, BrpHotReloadRequest, BrpModInfo,
+        BrpSystemMetrics, ComponentUuid, ScheduleId,
+    };
+
+    #[repr(C)]
+    #[derive(Component, ModComponent, Clone, Copy, Default)]
+    #[mod_component(name = "dto_test::Sprite")]
+    struct DtoSprite {
+        tint: u32,
+        handle: bamabi_sys::FfiAssetHandle,
+    }
+
+    let mut app = App::new();
+    app.add_plugins((
+        AbiModPlugin,
+        RemotePlugin::default(),
+        ModTelemetryPlugin::new(),
+    ));
+    app.register_mod_component::<DtoSprite>(ComponentOptions::new().with_default())
+        .unwrap();
+
+    app.world_mut().spawn((
+        Name::new("mod:dto_mod"),
+        LoadedModInfo {
+            id: ModId(99),
+            name: "dto_mod".to_owned(),
+            version: "0.4.0".to_owned(),
+            path: PathBuf::from("mods/libdto_mod.dylib"),
+            system_count: 2,
+            fault_count: 0,
+        },
+    ));
+
+    app.world_mut()
+        .record_system_telemetry(SystemExecutionSample {
+            mod_id: Some(ModId(99)),
+            mod_name: "dto_mod".to_owned(),
+            system_name: "tick_sprites".to_owned(),
+            duration_us: 420,
+            matched_entities: 12,
+            matched_tables: 2,
+            skipped_summary_tick_tables: 1,
+            chunks: 2,
+            commands_queued: 3,
+            faulted: false,
+            budget_breached: true,
+        });
+
+    app.finish();
+    app.cleanup();
+    app.update();
+
+    // 1. `bam/component_schemas` deserializes cleanly into `bamabi_sys::BrpComponentSchema` with
+    //    canonical hyphenated `ComponentUuid` JSON representation.
+    let schemas_val = call_remote_method(
+        app.world_mut(),
+        BRP_METHOD_BAM_COMPONENT_SCHEMAS,
+        Some(serde_json::json!({ "component": "dto_test::Sprite" })),
+    )
+    .expect("bam/component_schemas succeeds");
+    let schema_entry = &schemas_val["components"].as_array().unwrap()[0];
+    let uuid_str = schema_entry["uuid"].as_str().unwrap();
+    assert_eq!(uuid_str.len(), 36);
+    assert_eq!(&uuid_str[8..9], "-");
+    assert_eq!(&uuid_str[13..14], "-");
+    assert_eq!(&uuid_str[18..19], "-");
+    assert_eq!(&uuid_str[23..24], "-");
+
+    let dto_schema: BrpComponentSchema =
+        serde_json::from_value(schema_entry.clone()).expect("BrpComponentSchema serde roundtrip");
+    assert_eq!(dto_schema.canonical_name, "dto_test::Sprite");
+    assert_eq!(
+        dto_schema.uuid,
+        <DtoSprite as bamabi_sys::ModComponent>::UUID
+    );
+    assert_eq!(
+        dto_schema.schema_fingerprint,
+        <DtoSprite as bamabi_sys::ModComponent>::SCHEMA_FINGERPRINT
+    );
+    assert_eq!(dto_schema.size, core::mem::size_of::<DtoSprite>());
+    assert_eq!(dto_schema.align, core::mem::align_of::<DtoSprite>());
+    assert_eq!(dto_schema.fields.len(), 2);
+    assert_eq!(dto_schema.fields[1].name, "handle");
+    assert_eq!(dto_schema.fields[1].type_tag, "FfiAssetHandle");
+    assert_eq!(dto_schema.fields[1].size, 32);
+    assert_eq!(dto_schema.fields[1].align, 4);
+
+    // Verify canonical `ComponentUuid` hyphenated serde roundtrip independently.
+    let raw_uuid = ComponentUuid::from_bytes(*b"bamabi_040_uuid!");
+    let uuid_json = serde_json::to_value(raw_uuid).unwrap();
+    assert_eq!(
+        uuid_json.as_str().unwrap().len(),
+        36,
+        "ComponentUuid must serialize as hyphenated 8-4-4-4-12 UUID"
+    );
+    assert_eq!(
+        serde_json::from_value::<ComponentUuid>(uuid_json).unwrap(),
+        raw_uuid
+    );
+
+    // 2. `bam/list_mods` deserializes cleanly into `bamabi_sys::BrpModInfo`.
+    let mods_val = call_remote_method(app.world_mut(), BRP_METHOD_BAM_LIST_MODS, None)
+        .expect("bam/list_mods succeeds");
+    let dto_mod: BrpModInfo =
+        serde_json::from_value(mods_val["mods"].as_array().unwrap()[0].clone())
+            .expect("BrpModInfo serde roundtrip");
+    assert_eq!(dto_mod.mod_id, 99);
+    assert_eq!(dto_mod.name, "dto_mod");
+    assert_eq!(dto_mod.version, "0.4.0");
+    assert_eq!(dto_mod.abi_version, ABI_VERSION);
+    assert_eq!(dto_mod.system_count, 2);
+
+    // 3. `bam/system_metrics` deserializes cleanly into `bamabi_sys::BrpSystemMetrics` and
+    //    matches `ModBudgetSnapshot::to_telemetry_digest64`.
+    let metrics_val = call_remote_method(
+        app.world_mut(),
+        BRP_METHOD_BAM_SYSTEM_METRICS,
+        Some(serde_json::json!({ "mod_id": 99 })),
+    )
+    .expect("bam/system_metrics succeeds");
+    let dto_metric: BrpSystemMetrics =
+        serde_json::from_value(metrics_val["systems"].as_array().unwrap()[0].clone())
+            .expect("BrpSystemMetrics serde roundtrip");
+    assert_eq!(dto_metric.mod_id, 99);
+    assert_eq!(dto_metric.mod_name, "dto_mod");
+    assert_eq!(dto_metric.system_name, "tick_sprites");
+    assert_eq!(dto_metric.matched_entities, 12);
+    assert_eq!(dto_metric.skipped_summary_tick_tables, 1);
+
+    let recorder_metric = app
+        .world()
+        .resource::<ModTelemetryRecorder>()
+        .system_metrics()
+        .into_iter()
+        .find(|m| m.mod_id == 99)
+        .unwrap();
+    let digest_from_recorder = recorder_metric.to_digest64(dto_metric.frame_seq);
+    let mut digest_from_budget = recorder_metric.to_budget_snapshot().to_telemetry_digest64(
+        "dto_mod",
+        "tick_sprites",
+        ScheduleId::UPDATE,
+        0,
+    );
+    digest_from_budget.frame_seq = dto_metric.frame_seq;
+    assert_eq!(digest_from_recorder, digest_from_budget);
+    assert_eq!(digest_from_recorder.flags, dto_metric.flags);
+
+    // 4. `bam/hot_reload` accepts `bamabi_sys::BrpHotReloadRequest` (including when `force` is omitted).
+    let omitted_force_req: BrpHotReloadRequest = serde_json::from_str(r#"{"mod_id": 99}"#)
+        .expect("BrpHotReloadRequest must deserialize when `force` is omitted");
+    assert_eq!(omitted_force_req.mod_id, Some(99));
+    assert!(!omitted_force_req.force);
+
+    let reload_req = BrpHotReloadRequest {
+        mod_id: Some(99),
+        mod_name: Some("dto_mod".to_owned()),
+        path: Some("/tmp/dto_mod_v2.dylib".to_owned()),
+        force: false,
+    };
+    let reload_res = call_remote_method(
+        app.world_mut(),
+        BRP_METHOD_BAM_HOT_RELOAD,
+        Some(serde_json::to_value(reload_req).unwrap()),
+    )
+    .expect("bam/hot_reload accepts BrpHotReloadRequest");
+    assert_eq!(reload_res["status"], "scheduled");
+    assert_eq!(reload_res["mod_id"], 99);
+    let _ = BamComponent::INVALID;
+}

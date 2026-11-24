@@ -1210,3 +1210,232 @@ fn ephemeral_handle_behavior_and_headless_asset_server_error_handling() {
         other => panic!("expected Serialization error without AssetServer, got {other:?}"),
     }
 }
+
+#[test]
+fn ffi_asset_handle_bam_field_save_and_load_roundtrip() {
+    use bamabi_schema::{SchemaFieldInput, compute_schema_fingerprint};
+    use bamabi_sys::FfiAssetHandle;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct SaveableAssetSprite {
+        tint: u32,
+        sprite: FfiAssetHandle,
+    }
+
+    let fields = [
+        BamFieldDesc::new(
+            BamFieldKind::U32,
+            StrView::from_str("tint"),
+            StrView::from_str("u32"),
+            core::mem::offset_of!(SaveableAssetSprite, tint),
+            4,
+            4,
+        ),
+        BamFieldDesc::new(
+            BamFieldKind::NESTED,
+            StrView::from_str("sprite"),
+            StrView::from_str("FfiAssetHandle"),
+            core::mem::offset_of!(SaveableAssetSprite, sprite),
+            32,
+            4,
+        ),
+    ];
+    let schema_fields = [
+        SchemaFieldInput {
+            kind_code: BamFieldKind::U32.0,
+            name: "tint",
+            type_tag: "u32",
+            offset: fields[0].offset as u64,
+            size: fields[0].size as u64,
+            align: fields[0].align as u64,
+            include_in_pod_hash: true,
+        },
+        SchemaFieldInput {
+            kind_code: BamFieldKind::NESTED.0,
+            name: "sprite",
+            type_tag: "FfiAssetHandle",
+            offset: fields[1].offset as u64,
+            size: fields[1].size as u64,
+            align: fields[1].align as u64,
+            include_in_pod_hash: true,
+        },
+    ];
+    let expected_fp = compute_schema_fingerprint(
+        "save_assets::Sprite",
+        core::mem::size_of::<SaveableAssetSprite>() as u64,
+        core::mem::align_of::<SaveableAssetSprite>() as u64,
+        0,
+        &schema_fields,
+    );
+
+    let mut save_app = App::new();
+    save_app.add_plugins((AbiModPlugin, ModSaveGamePlugin::new()));
+    spawn_active_mod_info(save_app.world_mut(), ModId(77), "save_assets", "0.4.0");
+    let save_handle = register_dynamic_mod_component(
+        save_app.world_mut(),
+        ModId(77),
+        "save_assets::Sprite",
+        c"save_assets::Sprite",
+        core::mem::size_of::<SaveableAssetSprite>(),
+        core::mem::align_of::<SaveableAssetSprite>(),
+        expected_fp,
+        &fields,
+    );
+
+    let expected_asset = FfiAssetHandle::from_uuid(
+        BamComponent::from_raw(3),
+        ComponentUuid::from_bytes(*b"save_asset_uuid!"),
+    );
+    let saved_entity = save_app.world_mut().spawn_empty().id();
+    let mut raw_in = Vec::with_capacity(core::mem::size_of::<SaveableAssetSprite>());
+    raw_in.extend_from_slice(&0x1234_5678u32.to_ne_bytes());
+    raw_in.push(expected_asset.kind);
+    raw_in.extend_from_slice(&expected_asset.reserved0);
+    raw_in.extend_from_slice(&expected_asset.asset_type.to_raw().to_ne_bytes());
+    raw_in.extend_from_slice(&expected_asset.index.to_ne_bytes());
+    raw_in.extend_from_slice(&expected_asset.generation.to_ne_bytes());
+    raw_in.extend_from_slice(expected_asset.uuid.as_bytes());
+    write_entity_pod_bytes(save_app.world_mut(), saved_entity, save_handle, &raw_in).unwrap();
+
+    let archive = save_app
+        .save_mod_archive_with(&ModSaveOptions {
+            format_preference: ModSaveFormatPreference::PreferJsonFields,
+            ..ModSaveOptions::default()
+        })
+        .unwrap();
+
+    let header = archive
+        .component_headers
+        .iter()
+        .find(|h| h.component_name == "save_assets::Sprite")
+        .expect("SaveableAssetSprite header present");
+    assert_eq!(header.format, SavedComponentFormat::BamFieldsJson);
+    assert_eq!(header.component_uuid.len(), 36);
+    assert_eq!(header.schema_fingerprint, expected_fp);
+
+    let mut load_app = App::new();
+    load_app.add_plugins((AbiModPlugin, ModSaveGamePlugin::new()));
+    spawn_active_mod_info(load_app.world_mut(), ModId(77), "save_assets", "0.4.0");
+    let load_handle = register_dynamic_mod_component(
+        load_app.world_mut(),
+        ModId(77),
+        "save_assets::Sprite",
+        c"save_assets::Sprite",
+        core::mem::size_of::<SaveableAssetSprite>(),
+        core::mem::align_of::<SaveableAssetSprite>(),
+        expected_fp,
+        &fields,
+    );
+
+    let report = load_app
+        .load_mod_archive(&archive, ModSaveLoadPolicy::StrictRequireMods)
+        .unwrap();
+    let restored_entity = report.entity_map[&saved_entity.to_bits()];
+    let raw_out = read_entity_pod_bytes(load_app.world(), restored_entity, load_handle).unwrap();
+    assert_eq!(raw_out, raw_in);
+}
+
+#[test]
+fn unhashed_bam_field_component_uses_component_flags_not_is_abi_pod_for_fingerprint() {
+    use bamabi_schema::{SchemaFieldInput, compute_schema_fingerprint};
+    use bamabi_sys::FfiAssetHandle;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct UnhashedAssetSprite {
+        tint: u32,
+        sprite: FfiAssetHandle,
+    }
+
+    let fields = [
+        BamFieldDesc::new(
+            BamFieldKind::U32,
+            StrView::from_str("tint"),
+            StrView::from_str("u32"),
+            core::mem::offset_of!(UnhashedAssetSprite, tint),
+            4,
+            4,
+        ),
+        BamFieldDesc::new(
+            BamFieldKind::NESTED,
+            StrView::from_str("sprite"),
+            StrView::from_str("FfiAssetHandle"),
+            core::mem::offset_of!(UnhashedAssetSprite, sprite),
+            32,
+            4,
+        ),
+    ];
+    let schema_fields = [
+        SchemaFieldInput {
+            kind_code: BamFieldKind::U32.0,
+            name: "tint",
+            type_tag: "u32",
+            offset: fields[0].offset as u64,
+            size: fields[0].size as u64,
+            align: fields[0].align as u64,
+            include_in_pod_hash: true,
+        },
+        SchemaFieldInput {
+            kind_code: BamFieldKind::NESTED.0,
+            name: "sprite",
+            type_tag: "FfiAssetHandle",
+            offset: fields[1].offset as u64,
+            size: fields[1].size as u64,
+            align: fields[1].align as u64,
+            include_in_pod_hash: true,
+        },
+    ];
+    let expected_fp = compute_schema_fingerprint(
+        "save_assets::UnhashedSprite",
+        core::mem::size_of::<UnhashedAssetSprite>() as u64,
+        core::mem::align_of::<UnhashedAssetSprite>() as u64,
+        0,
+        &schema_fields,
+    );
+
+    let mut save_app = App::new();
+    save_app.add_plugins((AbiModPlugin, ModSaveGamePlugin::new()));
+    spawn_active_mod_info(save_app.world_mut(), ModId(78), "save_assets", "0.4.0");
+    // Register with explicit `schema_fingerprint == 0` so `savegame::effective_schema_fingerprint`
+    // computes the fingerprint dynamically from `component_flags` (`0`) rather than `is_abi_pod`.
+    let handle = register_dynamic_mod_component(
+        save_app.world_mut(),
+        ModId(78),
+        "save_assets::UnhashedSprite",
+        c"save_assets::UnhashedSprite",
+        core::mem::size_of::<UnhashedAssetSprite>(),
+        core::mem::align_of::<UnhashedAssetSprite>(),
+        0,
+        &fields,
+    );
+
+    let asset = FfiAssetHandle::from_uuid(
+        BamComponent::from_raw(3),
+        ComponentUuid::from_bytes(*b"unhashed_sprite!"),
+    );
+    let saved_entity = save_app.world_mut().spawn_empty().id();
+    let mut raw_in = Vec::with_capacity(core::mem::size_of::<UnhashedAssetSprite>());
+    raw_in.extend_from_slice(&0xDEAD_BEEFu32.to_ne_bytes());
+    raw_in.push(asset.kind);
+    raw_in.extend_from_slice(&asset.reserved0);
+    raw_in.extend_from_slice(&asset.asset_type.to_raw().to_ne_bytes());
+    raw_in.extend_from_slice(&asset.index.to_ne_bytes());
+    raw_in.extend_from_slice(&asset.generation.to_ne_bytes());
+    raw_in.extend_from_slice(asset.uuid.as_bytes());
+    write_entity_pod_bytes(save_app.world_mut(), saved_entity, handle, &raw_in).unwrap();
+
+    let archive = save_app
+        .save_mod_archive_with(&ModSaveOptions {
+            format_preference: ModSaveFormatPreference::PreferJsonFields,
+            ..ModSaveOptions::default()
+        })
+        .unwrap();
+
+    let header = archive
+        .component_headers
+        .iter()
+        .find(|h| h.component_name == "save_assets::UnhashedSprite")
+        .expect("UnhashedAssetSprite header present");
+    assert_eq!(header.schema_fingerprint, expected_fp);
+}

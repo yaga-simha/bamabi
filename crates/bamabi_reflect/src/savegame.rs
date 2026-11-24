@@ -1,5 +1,5 @@
 //! Versioned save-game persistence (`ModSaveGamePlugin`) for persistent (`!ModScoped`) modded
-//! Bevy ECS entities (`ABI 0.3.0`).
+//! Bevy ECS entities (`ABI 0.4.0`).
 //!
 //! Serializes persistent entities carrying host- or mod-registered components into a deterministic,
 //! self-describing [`ModSaveArchive`] (JSON or checksummed binary) carrying explicit per-component
@@ -17,9 +17,11 @@
 //!   or automatic field-name-matched `BamFieldDesc` / witness / `DynamicStruct` migration.
 
 use crate::codec::{
-    decode_pod_field_bytes_to_json, deserialize_reflect_from_json, encode_hex_lower,
+    canonical_wire_type_spec, decode_ffi_asset_handle_ne_bytes, decode_pod_field_bytes_to_json,
+    deserialize_reflect_from_json, encode_ffi_asset_handle_ne_bytes, encode_hex_lower,
     encode_json_to_pod_field_bytes, encode_json_to_witness_record, exported_records_to_json_map,
-    serialize_reflect_to_json,
+    ffi_asset_handle_to_json, format_component_uuid_hyphenated, is_ffi_asset_handle_desc,
+    json_to_ffi_asset_handle, serialize_reflect_to_json,
 };
 use crate::reflect::{ModReflectRegistry, ModReflectWorldExt};
 use bamabi_host::{LoadedModInfo, ModHost, ModId, ModRegistry, ModScoped};
@@ -30,9 +32,14 @@ use bamabi_host_sys::{
     inspect_component_witness_fields, inspect_component_witness_fields_in_registry,
     read_entity_pod_bytes, write_entity_pod_bytes,
 };
+use bamabi_schema::{
+    SchemaFieldInput, compute_schema_fingerprint, fnv1a_64_init, fnv1a_64_update_bytes,
+};
 use bamabi_sys::{
-    BAM_CHILD_OF_NAME, BAM_CHILDREN_NAME, BamComponent, BamFieldKind, ComponentUuid,
-    FNV1A_64_OFFSET_BASIS, FNV1A_64_PRIME, FfiResult,
+    BAM_CHILD_OF_NAME, BAM_CHILDREN_NAME, BAM_COMPONENT_FLAG_IMMUTABLE,
+    BAM_COMPONENT_FLAG_SPARSE_SET, BAM_COMPONENT_FLAG_SUMMARY_TICK, BAM_STORAGE_FLAG_IMMUTABLE,
+    BAM_STORAGE_FLAG_SPARSE_SET, BAM_STORAGE_FLAG_SUMMARY_TICK, BamComponent, BamFieldKind,
+    ComponentUuid, FfiResult,
 };
 use bevy_app::{App, Plugin};
 pub use bevy_asset::EphemeralHandleBehavior;
@@ -65,38 +72,11 @@ const BINARY_HEADER_LEN: usize = 24;
 
 /// Formats a 128-bit [`ComponentUuid`] into canonical lowercase 36-character `"8-4-4-4-12"` hex.
 pub(crate) fn format_component_uuid(uuid: ComponentUuid) -> String {
-    let b = uuid.as_bytes();
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0],
-        b[1],
-        b[2],
-        b[3],
-        b[4],
-        b[5],
-        b[6],
-        b[7],
-        b[8],
-        b[9],
-        b[10],
-        b[11],
-        b[12],
-        b[13],
-        b[14],
-        b[15]
-    )
-}
-
-fn fnv1a_64_update(mut hash: u64, bytes: &[u8]) -> u64 {
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV1A_64_PRIME);
-    }
-    hash
+    format_component_uuid_hyphenated(uuid)
 }
 
 fn fnv1a_64_bytes(bytes: &[u8]) -> u64 {
-    fnv1a_64_update(FNV1A_64_OFFSET_BASIS, bytes)
+    fnv1a_64_update_bytes(fnv1a_64_init(), bytes)
 }
 
 fn decode_hex_nibble(b: u8) -> Option<u8> {
@@ -1231,6 +1211,20 @@ fn collect_saved_field_headers(
     (headers, bam_fields, witness_fields)
 }
 
+const fn component_flags_from_storage_flags(storage_flags: u32) -> u32 {
+    let mut flags = 0u32;
+    if (storage_flags & BAM_STORAGE_FLAG_SPARSE_SET) != 0 {
+        flags |= BAM_COMPONENT_FLAG_SPARSE_SET;
+    }
+    if (storage_flags & BAM_STORAGE_FLAG_IMMUTABLE) != 0 {
+        flags |= BAM_COMPONENT_FLAG_IMMUTABLE;
+    }
+    if (storage_flags & BAM_STORAGE_FLAG_SUMMARY_TICK) != 0 {
+        flags |= BAM_COMPONENT_FLAG_SUMMARY_TICK;
+    }
+    flags
+}
+
 fn effective_schema_fingerprint(
     entry: &RegisteredComponent,
     field_headers: &[SavedFieldHeader],
@@ -1238,23 +1232,26 @@ fn effective_schema_fingerprint(
     if entry.schema_fingerprint != 0 {
         return entry.schema_fingerprint;
     }
-    let mut h = FNV1A_64_OFFSET_BASIS;
-    h = fnv1a_64_update(h, entry.name.as_bytes());
-    h = fnv1a_64_update(h, &[0xff]);
-    h = fnv1a_64_update(h, &(entry.size as u64).to_le_bytes());
-    h = fnv1a_64_update(h, &(entry.align as u64).to_le_bytes());
-    h = fnv1a_64_update(h, &[u8::from(entry.is_abi_pod)]);
-    for field in field_headers {
-        h = fnv1a_64_update(h, field.name.as_bytes());
-        h = fnv1a_64_update(h, &[0xfe]);
-        h = fnv1a_64_update(h, field.type_tag.as_bytes());
-        h = fnv1a_64_update(h, &[0xfd]);
-        h = fnv1a_64_update(h, &field.kind.to_le_bytes());
-        h = fnv1a_64_update(h, &(field.offset as u64).to_le_bytes());
-        h = fnv1a_64_update(h, &(field.size as u64).to_le_bytes());
-        h = fnv1a_64_update(h, &(field.align as u64).to_le_bytes());
-    }
-    h
+    let schema_fields: Vec<SchemaFieldInput<'_>> = field_headers
+        .iter()
+        .map(|field| SchemaFieldInput {
+            kind_code: field.kind,
+            name: &field.name,
+            type_tag: &field.type_tag,
+            offset: field.offset as u64,
+            size: field.size as u64,
+            align: field.align as u64,
+            include_in_pod_hash: field.kind != BamFieldKind::OPAQUE.0
+                && field.kind != BamFieldKind::UNKNOWN.0,
+        })
+        .collect();
+    compute_schema_fingerprint(
+        entry.name.as_ref(),
+        entry.size as u64,
+        entry.align as u64,
+        component_flags_from_storage_flags(entry.storage_flags),
+        &schema_fields,
+    )
 }
 
 fn infer_mod_namespace(component_name: &str) -> Option<&str> {
@@ -1284,7 +1281,9 @@ fn choose_save_format(
     pref: ModSaveFormatPreference,
 ) -> Option<SavedComponentFormat> {
     let can_raw_pod = entry.is_abi_pod && entry.drop_fn.is_none();
-    let has_bam_pod_fields = bam_fields.iter().any(|f| f.pod_kind.is_some());
+    let has_bam_pod_fields = bam_fields
+        .iter()
+        .any(|f| f.pod_kind.is_some() || is_ffi_asset_handle_desc(f));
     let has_witness = !witness_fields.is_empty();
     let has_typed_reflect = has_typed_reflect_support(world, entry);
 
@@ -1871,13 +1870,15 @@ fn load_archive_into_world(
                     let outcome = migrate_component(
                         world,
                         entity,
-                        header,
-                        active,
-                        *active_fingerprint,
-                        bam_fields,
-                        witness_fields,
-                        migrator.as_ref(),
-                        &comp.payload,
+                        MigrateComponentArgs {
+                            saved_header: header,
+                            active,
+                            active_fingerprint: *active_fingerprint,
+                            bam_fields,
+                            witness_fields,
+                            migrator: migrator.as_ref(),
+                            payload: &comp.payload,
+                        },
                     )?;
                     match outcome {
                         MigrationOutcome::Migrated => {
@@ -1970,18 +1971,30 @@ enum MigrationOutcome {
     Stripped,
 }
 
-#[allow(clippy::too_many_arguments)]
+struct MigrateComponentArgs<'a> {
+    saved_header: &'a SavedComponentHeader,
+    active: &'a RegisteredComponent,
+    active_fingerprint: u64,
+    bam_fields: &'a [BamFieldDescriptor],
+    witness_fields: &'a [WitnessFieldDescriptor],
+    migrator: Option<&'a ModComponentMigrator>,
+    payload: &'a SavedComponentPayload,
+}
+
 fn migrate_component(
     world: &mut World,
     entity: Entity,
-    saved_header: &SavedComponentHeader,
-    active: &RegisteredComponent,
-    active_fingerprint: u64,
-    bam_fields: &[BamFieldDescriptor],
-    witness_fields: &[WitnessFieldDescriptor],
-    migrator: Option<&ModComponentMigrator>,
-    payload: &SavedComponentPayload,
+    args: MigrateComponentArgs<'_>,
 ) -> Result<MigrationOutcome, ModSaveLoadError> {
+    let MigrateComponentArgs {
+        saved_header,
+        active,
+        active_fingerprint,
+        bam_fields,
+        witness_fields,
+        migrator,
+        payload,
+    } = args;
     // 1. Registered custom migrator takes top priority.
     if let Some(custom) = migrator {
         let ctx = ComponentMigrationContext {
@@ -2065,21 +2078,37 @@ fn migrate_component(
     if !bam_fields.is_empty() && active.is_abi_pod && active.drop_fn.is_none() {
         let mut patches = Vec::new();
         for field in bam_fields {
-            let Some(pod_kind) = field.pod_kind else {
+            let Some(val) = source_fields.get(&field.name) else {
                 continue;
             };
-            if let Some(val) = source_fields.get(&field.name) {
-                let bytes = encode_json_to_pod_field_bytes(&field.name, pod_kind, val).map_err(
-                    |reason| ModSaveLoadError::MigrationFailed {
+            let bytes = if is_ffi_asset_handle_desc(field) {
+                let handle = json_to_ffi_asset_handle(&field.name, val).map_err(|reason| {
+                    ModSaveLoadError::MigrationFailed {
                         component_name: active.name.to_string(),
                         reason,
-                    },
-                )?;
-                patches.push(BamFieldBytePatch {
-                    offset: field.offset,
-                    bytes,
-                });
-            }
+                    }
+                })?;
+                encode_ffi_asset_handle_ne_bytes(&handle).map_err(|reason| {
+                    ModSaveLoadError::MigrationFailed {
+                        component_name: active.name.to_string(),
+                        reason,
+                    }
+                })?
+            } else {
+                let Some(pod_kind) = field.pod_kind else {
+                    continue;
+                };
+                encode_json_to_pod_field_bytes(&field.name, pod_kind, val).map_err(|reason| {
+                    ModSaveLoadError::MigrationFailed {
+                        component_name: active.name.to_string(),
+                        reason,
+                    }
+                })?
+            };
+            patches.push(BamFieldBytePatch {
+                offset: field.offset,
+                bytes,
+            });
         }
         insert_entity_pod_with_field_patches(world, entity, active.handle, &patches).map_err(
             |status| ModSaveLoadError::Ffi {
@@ -2155,20 +2184,36 @@ fn apply_json_fields_to_entity(
     if !bam_fields.is_empty() && active.is_abi_pod && active.drop_fn.is_none() {
         let mut patches = Vec::new();
         for (k, v) in map {
-            if let Some(bf) = bam_fields.iter().find(|f| f.name == *k)
-                && let Some(pod_kind) = bf.pod_kind
-            {
-                let bytes = encode_json_to_pod_field_bytes(k, pod_kind, v).map_err(|reason| {
+            let Some(bf) = bam_fields.iter().find(|f| f.name == *k) else {
+                continue;
+            };
+            let bytes = if is_ffi_asset_handle_desc(bf) {
+                let handle = json_to_ffi_asset_handle(k, v).map_err(|reason| {
                     ModSaveLoadError::MigrationFailed {
                         component_name: active.name.to_string(),
                         reason,
                     }
                 })?;
-                patches.push(BamFieldBytePatch {
-                    offset: bf.offset,
-                    bytes,
-                });
-            }
+                encode_ffi_asset_handle_ne_bytes(&handle).map_err(|reason| {
+                    ModSaveLoadError::MigrationFailed {
+                        component_name: active.name.to_string(),
+                        reason,
+                    }
+                })?
+            } else if let Some(pod_kind) = bf.pod_kind {
+                encode_json_to_pod_field_bytes(k, pod_kind, v).map_err(|reason| {
+                    ModSaveLoadError::MigrationFailed {
+                        component_name: active.name.to_string(),
+                        reason,
+                    }
+                })?
+            } else {
+                continue;
+            };
+            patches.push(BamFieldBytePatch {
+                offset: bf.offset,
+                bytes,
+            });
         }
         return insert_entity_pod_with_field_patches(world, entity, active.handle, &patches)
             .map_err(|status| ModSaveLoadError::Ffi {
@@ -2365,9 +2410,10 @@ fn decode_pod_bytes_with_bam_fields(
 ) -> Result<Map<String, Value>, ModSaveLoadError> {
     let mut map = Map::new();
     for field in fields {
-        let Some(pod_kind) = field.pod_kind else {
+        let is_asset_handle = is_ffi_asset_handle_desc(field);
+        if field.pod_kind.is_none() && !is_asset_handle {
             continue;
-        };
+        }
         let end = field
             .offset
             .checked_add(field.size)
@@ -2381,7 +2427,15 @@ fn decode_pod_bytes_with_bam_fields(
                 raw.len()
             ))
         })?;
-        if let Some(val) = decode_pod_field_bytes_to_json(pod_kind, slice) {
+        if is_asset_handle {
+            let handle = decode_ffi_asset_handle_ne_bytes(slice)
+                .map_err(ModSaveLoadError::CorruptArchive)?;
+            let val =
+                ffi_asset_handle_to_json(&handle).map_err(ModSaveLoadError::CorruptArchive)?;
+            map.insert(field.name.clone(), val);
+        } else if let Some(pod_kind) = field.pod_kind
+            && let Some(val) = decode_pod_field_bytes_to_json(pod_kind, slice)
+        {
             map.insert(field.name.clone(), val);
         }
     }
@@ -2394,15 +2448,23 @@ fn decode_raw_bytes_using_saved_fields(
 ) -> Map<String, Value> {
     let mut map = Map::new();
     for field in saved_fields {
-        let Some(pod_kind) =
-            BamFieldPodKind::classify(BamFieldKind(field.kind), &field.type_tag, field.size)
-        else {
-            continue;
-        };
         let Some(end) = field.offset.checked_add(field.size) else {
             continue;
         };
         let Some(slice) = raw.get(field.offset..end) else {
+            continue;
+        };
+        if canonical_wire_type_spec(&field.type_tag)
+            .is_some_and(|spec| spec.canonical_tag == "FfiAssetHandle")
+            && let Ok(handle) = decode_ffi_asset_handle_ne_bytes(slice)
+            && let Ok(val) = ffi_asset_handle_to_json(&handle)
+        {
+            map.insert(field.name.clone(), val);
+            continue;
+        }
+        let Some(pod_kind) =
+            BamFieldPodKind::classify(BamFieldKind(field.kind), &field.type_tag, field.size)
+        else {
             continue;
         };
         if let Some(val) = decode_pod_field_bytes_to_json(pod_kind, slice) {

@@ -1,4 +1,4 @@
-//! Integration tests for declarative ABI `0.3` [`BamFieldDesc`] reflection (`ReflectFromPtr`,
+//! Integration tests for declarative ABI `0.4` [`BamFieldDesc`] reflection (`ReflectFromPtr`,
 //! dynamic `StructInfo`, `ReflectComponent`/`ReflectResource`, `DynamicStruct`, `bamabi/*`
 //! BRP JSON-RPC, standard Bevy `0.20` `bevy_remote` BRP JSON-RPC, and `bevy_settings` TOML sync)
 //! on foreign/C99-style dynamic components and resources without Rust proc-macro witness VTables.
@@ -23,7 +23,7 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::Resource;
 use bevy_ecs::reflect::{AppTypeRegistry, ReflectComponent, ReflectResource};
 use bevy_ecs::world::World;
-use bevy_reflect::structs::DynamicStruct;
+use bevy_reflect::structs::{DynamicStruct, Struct};
 use bevy_reflect::{GetPath, ReflectFromPtr, TypeInfo};
 use bevy_remote::{BrpRequest, BrpResult, RemoteMethodSystemId, RemoteMethods, RemotePlugin};
 use core::ffi::CStr;
@@ -1476,4 +1476,282 @@ fn c99_packed_unaligned_and_invalid_bam_field_descriptors_validation() {
         u64::from_ne_bytes(raw_bytes[5..13].try_into().unwrap()),
         0x1122_3344_5566_7788u64
     );
+}
+
+#[test]
+fn ffi_asset_handle_bam_schema_parity_and_reflect_brp_roundtrip() {
+    use bamabi_schema::{
+        BamFieldKindId, SchemaFieldInput, TargetLayout, compute_component_uuid,
+        compute_schema_fingerprint, lookup_wire_type,
+    };
+    use bamabi_sys::FfiAssetHandle;
+
+    let spec = lookup_wire_type("FfiAssetHandle", TargetLayout::HOST)
+        .expect("bamabi_schema defines FfiAssetHandle");
+    assert_eq!(spec.canonical_tag, "FfiAssetHandle");
+    assert_eq!(spec.size, core::mem::size_of::<FfiAssetHandle>());
+    assert_eq!(spec.align, core::mem::align_of::<FfiAssetHandle>());
+    assert_eq!(spec.size, 32);
+    assert_eq!(spec.align, 4);
+    assert_eq!(spec.kind, BamFieldKindId::NESTED);
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+    struct C99SpriteAsset {
+        tint: u32,
+        sprite: FfiAssetHandle,
+    }
+
+    let fields = [
+        BamFieldDesc::new(
+            BamFieldKind::U32,
+            StrView::from_str("tint"),
+            StrView::from_str("u32"),
+            0,
+            4,
+            4,
+        ),
+        BamFieldDesc::new(
+            BamFieldKind::NESTED,
+            StrView::from_str("sprite"),
+            StrView::from_str("FfiAssetHandle"),
+            4,
+            32,
+            4,
+        ),
+    ];
+    let schema_inputs = [
+        SchemaFieldInput {
+            kind_code: BamFieldKind::U32.0,
+            name: "tint",
+            type_tag: "u32",
+            offset: 0,
+            size: 4,
+            align: 4,
+            include_in_pod_hash: true,
+        },
+        SchemaFieldInput {
+            kind_code: BamFieldKind::NESTED.0,
+            name: "sprite",
+            type_tag: "FfiAssetHandle",
+            offset: 4,
+            size: 32,
+            align: 4,
+            include_in_pod_hash: true,
+        },
+    ];
+    let expected_uuid = ComponentUuid::from_bytes(compute_component_uuid(
+        "c99_assets::Sprite",
+        core::mem::size_of::<C99SpriteAsset>() as u64,
+        core::mem::align_of::<C99SpriteAsset>() as u64,
+        true,
+        &schema_inputs,
+    ));
+    let expected_fp = compute_schema_fingerprint(
+        "c99_assets::Sprite",
+        core::mem::size_of::<C99SpriteAsset>() as u64,
+        core::mem::align_of::<C99SpriteAsset>() as u64,
+        0,
+        &schema_inputs,
+    );
+    assert_ne!(expected_uuid, ComponentUuid::ZERO);
+    assert_ne!(expected_fp, 0);
+
+    let mut app = App::new();
+    app.add_plugins((AbiModPlugin, RemotePlugin::default(), ModReflectPlugin));
+
+    let comp_handle = register_c99_dynamic(
+        app.world_mut(),
+        "c99_assets::Sprite",
+        c"c99_assets::Sprite",
+        core::mem::size_of::<C99SpriteAsset>(),
+        core::mem::align_of::<C99SpriteAsset>(),
+        0,
+        &fields,
+    );
+
+    app.finish();
+    app.cleanup();
+
+    let world = app.world_mut();
+    let schema = world
+        .resource::<ModReflectRegistry>()
+        .bam_field_schema(comp_handle)
+        .expect("FfiAssetHandle component schema must be registered");
+    assert_eq!(schema.fields.len(), 2);
+    assert!(
+        schema.reflected_type_id.is_none(),
+        "mixed POD + FfiAssetHandle component must not bind a partial BamFieldReflectSlot"
+    );
+
+    let uuid_bytes = *b"0123456789abcdef";
+    let uuid_str = "30313233-3435-3637-3839-616263646566";
+    let ent = world.spawn_empty().id();
+
+    // Insert via `bamabi/insert_components` with UUID-backed `FfiAssetHandle`.
+    world
+        .dispatch_mod_brp_request(BrpRequest {
+            method: BRP_METHOD_INSERT_COMPONENTS.to_owned(),
+            id: Some(serde_json::json!(1)),
+            params: Some(serde_json::json!({
+                "entity": ent.to_bits(),
+                "components": {
+                    "c99_assets::Sprite": {
+                        "tint": 0xff00_ff00u32,
+                        "sprite": {
+                            "kind": "uuid",
+                            "asset_type": 5,
+                            "uuid": uuid_str,
+                        }
+                    }
+                }
+            })),
+        })
+        .unwrap();
+
+    // Read back via `bamabi/get_components`.
+    let got = world
+        .dispatch_mod_brp_request(BrpRequest {
+            method: BRP_METHOD_GET_COMPONENTS.to_owned(),
+            id: Some(serde_json::json!(2)),
+            params: Some(serde_json::json!({
+                "entity": ent.to_bits(),
+                "components": ["c99_assets::Sprite"],
+            })),
+        })
+        .unwrap();
+    let sprite_json = &got["components"]["c99_assets::Sprite"]["sprite"];
+    assert_eq!(sprite_json["kind"], "uuid");
+    assert_eq!(sprite_json["asset_type"], 5);
+    assert_eq!(sprite_json["uuid"], uuid_str);
+
+    // Mutate to index-backed `FfiAssetHandle` via `bamabi/mutate_components`.
+    world
+        .dispatch_mod_brp_request(BrpRequest {
+            method: BRP_METHOD_MUTATE_COMPONENTS.to_owned(),
+            id: Some(serde_json::json!(3)),
+            params: Some(serde_json::json!({
+                "entity": ent.to_bits(),
+                "component": "c99_assets::Sprite",
+                "value": {
+                    "sprite": {
+                        "kind": "index",
+                        "asset_type": 7,
+                        "index": 42,
+                        "generation": 3,
+                    }
+                }
+            })),
+        })
+        .unwrap();
+
+    let raw = read_entity_pod_bytes(world, ent, comp_handle).unwrap();
+    assert_eq!(
+        u32::from_ne_bytes(raw[0..4].try_into().unwrap()),
+        0xff00_ff00
+    );
+    assert_eq!(raw[4], FfiAssetHandle::KIND_INDEX);
+    assert_eq!(u32::from_ne_bytes(raw[8..12].try_into().unwrap()), 7);
+    assert_eq!(u32::from_ne_bytes(raw[12..16].try_into().unwrap()), 42);
+    assert_eq!(u32::from_ne_bytes(raw[16..20].try_into().unwrap()), 3);
+
+    // Mixed POD + `FfiAssetHandle` components must not lose `FfiAssetHandle` in
+    // `clone_mod_component_dynamic`, must return `UNSUPPORTED` for zero-copy `&dyn Reflect`,
+    // and must return an entry in `"errors"` (not truncated JSON) for standard `world.get_components`.
+    let cloned_dyn = world
+        .clone_mod_component_dynamic(ent, comp_handle)
+        .expect("clone_mod_component_dynamic must export complete DynamicStruct");
+    let cloned_struct = cloned_dyn
+        .reflect_ref()
+        .as_struct()
+        .expect("cloned mixed component must be a Struct");
+    assert_eq!(
+        *cloned_struct
+            .field("tint")
+            .expect("cloned struct must retain POD tint field")
+            .try_downcast_ref::<u32>()
+            .unwrap(),
+        0xff00_ff00
+    );
+    let cloned_sprite = cloned_struct
+        .field("sprite")
+        .expect("cloned struct must retain FfiAssetHandle sprite field")
+        .reflect_ref()
+        .as_struct()
+        .unwrap();
+    assert_eq!(
+        cloned_sprite
+            .field("kind")
+            .unwrap()
+            .try_downcast_ref::<String>()
+            .unwrap(),
+        "index"
+    );
+    assert_eq!(
+        *cloned_sprite
+            .field("index")
+            .unwrap()
+            .try_downcast_ref::<u32>()
+            .unwrap(),
+        42
+    );
+
+    assert!(
+        matches!(
+            world.reflect_mod_component(ent, comp_handle),
+            Err(FfiResult::UNSUPPORTED)
+        ),
+        "mixed POD + FfiAssetHandle component must return UNSUPPORTED for reflect_mod_component"
+    );
+
+    let std_get = call_remote_method(
+        world,
+        "world.get_components",
+        Some(serde_json::json!({
+            "entity": ent.to_bits(),
+            "components": ["c99_assets::Sprite"],
+            "strict": false,
+        })),
+    )
+    .unwrap();
+    assert!(
+        std_get["errors"]["c99_assets::Sprite"].is_object(),
+        "standard world.get_components(strict: false) must report error instead of silently dropping sprite: {std_get}"
+    );
+    assert!(
+        std_get["components"]["c99_assets::Sprite"].is_null(),
+        "standard world.get_components must not emit truncated component data: {std_get}"
+    );
+
+    // DynamicStruct export & patch roundtrip back to UUID handle.
+    let dyn_val = world
+        .export_bam_fields_dynamic_struct(ent, comp_handle)
+        .unwrap();
+    assert_eq!(
+        *dyn_val
+            .field("sprite")
+            .unwrap()
+            .reflect_ref()
+            .as_struct()
+            .unwrap()
+            .field("index")
+            .unwrap()
+            .try_downcast_ref::<u32>()
+            .unwrap(),
+        42
+    );
+
+    let mut uuid_struct = DynamicStruct::default();
+    uuid_struct.insert("kind", "uuid".to_owned());
+    uuid_struct.insert("asset_type", 9u32);
+    uuid_struct.insert("uuid", uuid_str.to_owned());
+    let mut patch = DynamicStruct::default();
+    patch.insert("sprite", uuid_struct);
+    world
+        .apply_bam_fields_dynamic_struct(ent, comp_handle, &patch)
+        .unwrap();
+    let raw2 = read_entity_pod_bytes(world, ent, comp_handle).unwrap();
+    assert_eq!(raw2[4], FfiAssetHandle::KIND_UUID);
+    assert_eq!(u32::from_ne_bytes(raw2[8..12].try_into().unwrap()), 9);
+    assert_eq!(&raw2[20..36], &uuid_bytes);
 }

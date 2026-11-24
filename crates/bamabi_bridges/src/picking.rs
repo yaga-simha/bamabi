@@ -1024,13 +1024,31 @@ fn forward_pointer_drag(on: On<PointerDrag>, mut commands: Commands) {
     ));
 }
 
-#[allow(clippy::type_complexity)]
+type ChangedOrMissingHostCursorQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static EntityCursor,
+        Option<&'static mut FfiEntityCursor>,
+    ),
+    Or<(Changed<EntityCursor>, Without<FfiEntityCursor>)>,
+>;
+
+type ChangedOrMissingFfiCursorQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static FfiEntityCursor,
+        Option<&'static mut EntityCursor>,
+    ),
+    Or<(Changed<FfiEntityCursor>, Without<EntityCursor>)>,
+>;
+
 fn sync_host_entity_cursor_to_ffi(
     mut commands: Commands,
-    mut host_cursors: Query<
-        (Entity, &EntityCursor, Option<&mut FfiEntityCursor>),
-        Or<(Changed<EntityCursor>, Without<FfiEntityCursor>)>,
-    >,
+    mut host_cursors: ChangedOrMissingHostCursorQuery<'_, '_>,
     mut removed_host: RemovedComponents<EntityCursor>,
     ffi_only: Query<(), (With<FfiEntityCursor>, Without<EntityCursor>)>,
 ) {
@@ -1056,13 +1074,9 @@ fn sync_host_entity_cursor_to_ffi(
     }
 }
 
-#[allow(clippy::type_complexity)]
 fn sync_ffi_entity_cursor_to_host(
     mut commands: Commands,
-    mut ffi_cursors: Query<
-        (Entity, &FfiEntityCursor, Option<&mut EntityCursor>),
-        Or<(Changed<FfiEntityCursor>, Without<EntityCursor>)>,
-    >,
+    mut ffi_cursors: ChangedOrMissingFfiCursorQuery<'_, '_>,
     mut removed_ffi: RemovedComponents<FfiEntityCursor>,
     host_only: Query<(), (With<EntityCursor>, Without<FfiEntityCursor>)>,
 ) {

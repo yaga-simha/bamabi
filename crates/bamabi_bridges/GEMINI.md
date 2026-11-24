@@ -1,11 +1,11 @@
 # Agent Guide: `bamabi_bridges`
 
-Crate guide for **`bamabi_bridges`** (`v0.3.0`, ABI `0x0003_0000`, Bevy `0.20.1+`) — opt-in Bevy subsystem bridges and curated feature presets.
+Crate guide for **`bamabi_bridges`** (`v0.4.0`, ABI `0x0004_0000`, Bevy `0.20.1+`) — opt-in Bevy subsystem bridges and curated feature presets.
 
 ---
 
 ## 1. Crate Identity
-- **Name:** `bamabi_bridges` (`version = "0.3.0"`, `edition = "2024"`, MSRV `1.95`)
+- **Name:** `bamabi_bridges` (`version = "0.4.0"`, `edition = "2024"`, MSRV `1.95`)
 - **Role:** Provides strictly feature-gated (`default = []`) Bevy `0.20.1` subsystem bridges (std types, isolated `mod://` assets, states, BSN scenes, picking/input, audio, 2D/3D cameras & lights, and UI/Feathers) plus curated 2D/3D/UI/Full preset bundles.
 
 ---

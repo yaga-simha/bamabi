@@ -4,7 +4,7 @@
 //! Safe (`#![forbid(unsafe_code)]`) multi-world `SubApp` extraction, WESL shaders,
 //! [`AlignedVec`](bevy_platform::collections::AlignedVec)-backed [`ShaderBuffer`] storage assets,
 //! Bevy `0.20` system-driven `RenderGraph` / `Core2d` / `Core3d` 2D/3D material modding, and
-//! bounded GPU device-loss recovery ([`ModRenderRecoveryPlugin`]) for `bamabi` (`ABI 0.3.0`,
+//! bounded GPU device-loss recovery ([`ModRenderRecoveryPlugin`]) for `bamabi` (`ABI 0.4.0`,
 //! Layer 3 in `https://github.com/yaga-simha/bamabi`, re-exported via `sub-app-extract`).
 //!
 //! Installing [`ModWeslMaterialPlugin`] (or calling any registration helper on [`ModMaterialAppExt`]

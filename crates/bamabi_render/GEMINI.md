@@ -1,11 +1,11 @@
 # Agent Guide: `bamabi_render`
 
-Crate guide for **`bamabi_render`** (`v0.3.0`, ABI `0x0003_0000`, Bevy `0.20.1+`) — multi-world `SubApp` extraction, WESL shaders, 2D/3D materials, mesh shaders, and bounded GPU device-loss recovery.
+Crate guide for **`bamabi_render`** (`v0.4.0`, ABI `0x0004_0000`, Bevy `0.20.1+`) — multi-world `SubApp` extraction, WESL shaders, 2D/3D materials, mesh shaders, and bounded GPU device-loss recovery.
 
 ---
 
 ## 1. Crate Identity
-- **Name:** `bamabi_render` (`version = "0.3.0"`, `edition = "2024"`, MSRV `1.95`)
+- **Name:** `bamabi_render` (`version = "0.4.0"`, `edition = "2024"`, MSRV `1.95`)
 - **Role:** Bridges modded data into Bevy `0.20.1`'s system-driven `RenderGraph`, `Core2d`/`Core3d` schedules, `.wesl`/`.wgsl` shader assets, `ShaderBuffer` storage assets, opt-in mesh-shader pipelines, and `RenderErrorPolicy::Recover` GPU device-loss recovery.
 
 ---

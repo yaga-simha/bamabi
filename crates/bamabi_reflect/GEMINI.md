@@ -1,11 +1,11 @@
 # Agent Guide: `bamabi_reflect`
 
-Crate guide for **`bamabi_reflect`** (`v0.3.0`, ABI `0x0003_0000`, Bevy `0.20.1+`) — dynamic `bevy_reflect`, Bevy Remote Protocol (BRP), `bevy-settings` TOML, persistent save-game archives, and live telemetry.
+Crate guide for **`bamabi_reflect`** (`v0.4.0`, ABI `0x0004_0000`, Bevy `0.20.1+`) — dynamic `bevy_reflect`, Bevy Remote Protocol (BRP), `bevy-settings` TOML, persistent save-game archives, and live telemetry.
 
 ---
 
 ## 1. Crate Identity
-- **Name:** `bamabi_reflect` (`version = "0.3.0"`, `edition = "2024"`, MSRV `1.95`)
+- **Name:** `bamabi_reflect` (`version = "0.4.0"`, `edition = "2024"`, MSRV `1.95`)
 - **Role:** Bridges modded witness and declarative `BamFieldDesc` schemas into Bevy `0.20.1` `AppTypeRegistry`, BRP (`bevy_remote`), `bevy-settings`, versioned save-game archives with asset handle round-tripping, and non-blocking `SystemTelemetryDigest64` telemetry streams.
 
 ---

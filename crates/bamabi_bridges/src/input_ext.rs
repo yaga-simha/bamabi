@@ -521,13 +521,21 @@ fn sync_mouse_motion_and_scroll_to_ffi(
 }
 
 #[cfg(feature = "bridge-picking")]
-#[allow(clippy::type_complexity)]
+type ChangedOrMissingGamepadQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Gamepad,
+        Option<&'static mut FfiGamepadState>,
+    ),
+    Or<(Changed<Gamepad>, Without<FfiGamepadState>)>,
+>;
+
+#[cfg(feature = "bridge-picking")]
 fn sync_gamepads_to_ffi(
     mut commands: Commands,
-    mut gamepads: Query<
-        (Entity, &Gamepad, Option<&mut FfiGamepadState>),
-        Or<(Changed<Gamepad>, Without<FfiGamepadState>)>,
-    >,
+    mut gamepads: ChangedOrMissingGamepadQuery<'_, '_>,
     mut removed_gamepads: RemovedComponents<Gamepad>,
     ffi_only: Query<(), (With<FfiGamepadState>, Without<Gamepad>)>,
 ) {

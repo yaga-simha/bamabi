@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Canonical Bevy host facade for zero-serialization, asymmetric C-ABI native modding (`ABI 0.3.0`)"
+description = "Canonical Bevy host facade for zero-serialization, asymmetric C-ABI native modding (`ABI 0.4.0`)"
 readme = "README.md"
 repository.workspace = true
 keywords.workspace = true
@@ -15,9 +15,14 @@ categories.workspace = true
 workspace = true
 
 [features]
+default = ["dynamic-loader"]
+dynamic-loader = ["bamabi_host/dynamic-loader"]
+static-only = ["bamabi_host/static-only"]
+cranelift-object-loader = ["bamabi_host/cranelift-object-loader"]
 strict-ffi-checks = ["bamabi_host/strict-ffi-checks"]
 diagnostics = ["bamabi_host/diagnostics"]
 signature-verification = ["bamabi_host/signature-verification"]
+keygen = ["signature-verification", "bamabi_host/keygen"]
 hot-reload-watcher = ["dep:bamabi_watcher"]
 bridge-std-types = [
     "dep:bamabi_bridges",
@@ -116,7 +121,7 @@ preset-full = [
 
 [dependencies]
 bamabi_sys = { workspace = true }
-bamabi_host = { workspace = true }
+bamabi_host = { workspace = true, default-features = false }
 bamabi_macros = { workspace = true }
 bamabi_bridges = { workspace = true, optional = true }
 bamabi_render = { workspace = true, optional = true }

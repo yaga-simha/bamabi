@@ -1,11 +1,11 @@
 # Agent Guide: `bamabi`
 
-Crate guide for **`bamabi`** (`v0.3.0`, ABI `0x0003_0000`, Bevy `0.20.1+`) — the **canonical** top-level Bevy host facade crate.
+Crate guide for **`bamabi`** (`v0.4.0`, ABI `0x0004_0000`, Bevy `0.20.1+`) — the **canonical** top-level Bevy host facade crate.
 
 ---
 
 ## 1. Crate Identity
-- **Name:** `bamabi` (`version = "0.3.0"`, `edition = "2024"`, MSRV `1.95`)
+- **Name:** `bamabi` (`version = "0.4.0"`, `edition = "2024"`, MSRV `1.95`)
 - **Role:** Canonical top-level Bevy host facade unifying `bamabi_host`, `bamabi_macros`, `bamabi_sys`, and opt-in companion crates (`bridges`, `render`, `reflect`, `watcher`) behind 18 granular feature flags, 4 curated bridge presets, and `prelude`.
 - **Retired Shim Note:** The legacy `bevy_abi_mod` forwarding shim was retired in `0.3.0`; `bamabi` is the sole canonical host facade crate.
 

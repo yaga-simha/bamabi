@@ -2,7 +2,10 @@
 //! and `bevy_settings` bridges for `bamabi` (`feature = "bridge-reflect"`).
 
 use crate::codec::{
-    deserialize_reflect_from_json, encode_json_to_pod_field_bytes, encode_json_to_witness_record,
+    canonical_wire_type_spec, decode_ffi_asset_handle_le_bytes, decode_ffi_asset_handle_ne_bytes,
+    deserialize_reflect_from_json, encode_ffi_asset_handle_le_bytes,
+    encode_ffi_asset_handle_ne_bytes, encode_json_to_pod_field_bytes,
+    encode_json_to_witness_record, format_component_uuid_hyphenated, is_ffi_asset_handle_desc,
     json_map_to_bam_field_patches, json_map_to_witness_records, serialize_reflect_to_json,
 };
 use bamabi_host_sys::loader::ExportedFieldRecord;
@@ -17,7 +20,10 @@ use bamabi_host_sys::{
     reflect_resource_component, reflect_resource_component_mut, register_bam_field_reflect_type,
     write_entity_bam_field_bytes, write_resource_bam_field_bytes,
 };
-use bamabi_sys::{BamComponent, BamFieldKind, FfiResult, ModComponent};
+use bamabi_schema::{canonical_leaf_ident, try_parse_uuid_hex};
+use bamabi_sys::{
+    BamComponent, BamFieldKind, ComponentUuid, FfiAssetHandle, FfiResult, ModComponent,
+};
 use bevy_app::{App, Plugin};
 use bevy_asset::{AssetServer, EphemeralHandleBehavior};
 use bevy_ecs::change_detection::Mut;
@@ -541,21 +547,28 @@ pub fn sync_bam_field_reflection_schemas(world: &mut World) -> usize {
         let Ok(Some(fields)) = inspect_component_bam_fields(world, handle) else {
             continue;
         };
+        if !validate_bam_fields_against_schema(&fields) {
+            continue;
+        }
         let has_non_pod_fields = fields
             .iter()
-            .any(|f| f.pod_kind.is_none() && f.kind != BamFieldKind::OPAQUE);
+            .any(|f| !is_reflectable_bam_field(f) && f.kind != BamFieldKind::OPAQUE);
         if has_non_pod_fields && inspect_component_witness_fields(world, handle).is_some() {
             // Witness VTable covers non-POD fields (`String`/`Vec`/`FfiOption`); avoid shadowing it
             // with a partial POD-only adapter.
             continue;
         }
-        if !fields.iter().any(|f| f.pod_kind.is_some()) {
+        if !fields.iter().any(is_reflectable_bam_field) {
             continue;
         }
 
-        let reflected_type_id = register_bam_field_reflect_type(world, handle)
-            .ok()
-            .flatten();
+        let reflected_type_id = if can_bind_full_inplace_bam_field_slot(&fields) {
+            register_bam_field_reflect_type(world, handle)
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
         discovered.push((
             handle,
             BamFieldReflectSchema {
@@ -795,6 +808,40 @@ fn resolve_reflected_type_id(world: &World, handle: BamComponent) -> Result<Type
     info.type_id().ok_or(FfiResult::UNSUPPORTED)
 }
 
+fn is_reflectable_bam_field(desc: &BamFieldDescriptor) -> bool {
+    desc.pod_kind.is_some() || is_ffi_asset_handle_desc(desc)
+}
+
+#[inline]
+fn bam_field_descriptor_is_inplace_reflectable(desc: &BamFieldDescriptor) -> bool {
+    desc.pod_kind.is_some() && desc.is_inplace_reflectable
+}
+
+fn can_bind_full_inplace_bam_field_slot(fields: &[BamFieldDescriptor]) -> bool {
+    !fields
+        .iter()
+        .any(|f| is_reflectable_bam_field(f) && !bam_field_descriptor_is_inplace_reflectable(f))
+}
+
+fn validate_bam_fields_against_schema(fields: &[BamFieldDescriptor]) -> bool {
+    fields.iter().all(|field| {
+        let Some(spec) = canonical_wire_type_spec(&field.type_tag) else {
+            return true;
+        };
+        if field.size != spec.size {
+            return false;
+        }
+        if is_ffi_asset_handle_desc(field)
+            && field.kind != BamFieldKind::UNKNOWN
+            && field.kind != BamFieldKind::OPAQUE
+            && field.kind != BamFieldKind::NESTED
+        {
+            return false;
+        }
+        true
+    })
+}
+
 fn resolve_bam_field_descriptors(
     world: &World,
     handle: BamComponent,
@@ -806,7 +853,10 @@ fn resolve_bam_field_descriptors(
         return Ok((schema.fields.clone(), schema.reflected_type_id));
     }
     let fields = inspect_component_bam_fields(world, handle)?.ok_or(FfiResult::UNSUPPORTED)?;
-    if !fields.iter().any(|f| f.pod_kind.is_some()) {
+    if !validate_bam_fields_against_schema(&fields) {
+        return Err(FfiResult::INVALID_ARGUMENT);
+    }
+    if !fields.iter().any(is_reflectable_bam_field) {
         return Err(FfiResult::UNSUPPORTED);
     }
     Ok((fields, None))
@@ -1041,10 +1091,17 @@ impl ModReflectWorldExt for World {
         };
         let fields =
             inspect_component_bam_fields(self, component)?.ok_or(FfiResult::UNSUPPORTED)?;
-        if !fields.iter().any(|f| f.pod_kind.is_some()) {
+        if !validate_bam_fields_against_schema(&fields) {
+            return Err(FfiResult::INVALID_ARGUMENT);
+        }
+        if !fields.iter().any(is_reflectable_bam_field) {
             return Err(FfiResult::UNSUPPORTED);
         }
-        let reflected_type_id = register_bam_field_reflect_type(self, component)?;
+        let reflected_type_id = if can_bind_full_inplace_bam_field_slot(&fields) {
+            register_bam_field_reflect_type(self, component)?
+        } else {
+            None
+        };
         let schema = BamFieldReflectSchema {
             component,
             canonical_name,
@@ -1144,7 +1201,18 @@ impl ModReflectWorldExt for World {
         entity: Entity,
         component: BamComponent,
     ) -> Result<Box<dyn PartialReflect>, ModReflectError> {
-        if let Ok(typed) = self.reflect_mod_component(entity, component) {
+        let has_incomplete_bam_slot = self
+            .get_resource::<ModReflectRegistry>()
+            .and_then(|r| r.bam_field_schema(component))
+            .is_some_and(|s| !can_bind_full_inplace_bam_field_slot(&s.fields))
+            && self
+                .get_resource::<ModRegistry>()
+                .and_then(|r| r.get_by_handle(component))
+                .and_then(|e| self.components().get_info(e.component_id))
+                .and_then(|info| info.type_id())
+                .is_none();
+        if !has_incomplete_bam_slot && let Ok(typed) = self.reflect_mod_component(entity, component)
+        {
             return typed.to_dynamic().map_err(ModReflectError::from);
         }
         if let Ok(dyn_struct) = self.export_witness_dynamic_struct(entity, component) {
@@ -1234,6 +1302,17 @@ impl ModReflectWorldExt for World {
         let (fields, reflected_type_id) = resolve_bam_field_descriptors(self, component)?;
         let mut out = DynamicStruct::default();
         for field in &fields {
+            if is_ffi_asset_handle_desc(field) {
+                let bytes =
+                    read_entity_bam_field_bytes(self, entity, component, field.offset, field.size)?;
+                let handle = decode_ffi_asset_handle_ne_bytes(&bytes)
+                    .map_err(|_| FfiResult::INVALID_ARGUMENT)?;
+                out.insert(
+                    field.name.clone(),
+                    ffi_asset_handle_to_dynamic_struct(&handle)?,
+                );
+                continue;
+            }
             let Some(pod_kind) = field.pod_kind else {
                 continue;
             };
@@ -1272,6 +1351,17 @@ impl ModReflectWorldExt for World {
         let (fields, reflected_type_id) = resolve_bam_field_descriptors(self, resource)?;
         let mut out = DynamicStruct::default();
         for field in &fields {
+            if is_ffi_asset_handle_desc(field) {
+                let bytes =
+                    read_resource_bam_field_bytes(self, resource, field.offset, field.size)?;
+                let handle = decode_ffi_asset_handle_ne_bytes(&bytes)
+                    .map_err(|_| FfiResult::INVALID_ARGUMENT)?;
+                out.insert(
+                    field.name.clone(),
+                    ffi_asset_handle_to_dynamic_struct(&handle)?,
+                );
+                continue;
+            }
             let Some(pod_kind) = field.pod_kind else {
                 continue;
             };
@@ -1588,6 +1678,84 @@ pub fn dynamic_struct_to_records(
     Ok(out)
 }
 
+fn ffi_asset_handle_to_dynamic_struct(handle: &FfiAssetHandle) -> Result<DynamicStruct, FfiResult> {
+    if handle.validate() != FfiResult::OK {
+        return Err(FfiResult::INVALID_ARGUMENT);
+    }
+    let kind = match handle.kind {
+        FfiAssetHandle::KIND_NONE => "none",
+        FfiAssetHandle::KIND_INDEX => "index",
+        FfiAssetHandle::KIND_UUID => "uuid",
+        _ => return Err(FfiResult::INVALID_ARGUMENT),
+    };
+    let mut s = DynamicStruct::default();
+    s.insert("kind", kind.to_owned());
+    s.insert("asset_type", handle.asset_type.to_raw());
+    s.insert("index", handle.index);
+    s.insert("generation", handle.generation);
+    s.insert("uuid", format_component_uuid_hyphenated(handle.uuid));
+    Ok(s)
+}
+
+fn dynamic_struct_to_ffi_asset_handle(
+    value: &dyn PartialReflect,
+) -> Result<FfiAssetHandle, FfiResult> {
+    let bevy_reflect::ReflectRef::Struct(st) = value.reflect_ref() else {
+        return Err(FfiResult::TYPE_MISMATCH);
+    };
+    let kind_field = st.field("kind").ok_or(FfiResult::INVALID_ARGUMENT)?;
+    let kind = if let Some(kind_str) = kind_field.try_downcast_ref::<String>() {
+        match kind_str.as_str() {
+            "none" | "NONE" => FfiAssetHandle::KIND_NONE,
+            "index" | "INDEX" => FfiAssetHandle::KIND_INDEX,
+            "uuid" | "UUID" => FfiAssetHandle::KIND_UUID,
+            _ => return Err(FfiResult::INVALID_ARGUMENT),
+        }
+    } else if let Some(n) = reflect_as_i128(kind_field) {
+        u8::try_from(n).map_err(|_| FfiResult::INVALID_ARGUMENT)?
+    } else {
+        return Err(FfiResult::TYPE_MISMATCH);
+    };
+    let asset_type = match st.field("asset_type") {
+        Some(f) => {
+            let n = reflect_as_i128(f).ok_or(FfiResult::TYPE_MISMATCH)?;
+            BamComponent::from_raw(u32::try_from(n).map_err(|_| FfiResult::INVALID_ARGUMENT)?)
+        }
+        None => BamComponent::INVALID,
+    };
+    let handle = match kind {
+        FfiAssetHandle::KIND_NONE => FfiAssetHandle::NONE,
+        FfiAssetHandle::KIND_INDEX => {
+            let index = st
+                .field("index")
+                .and_then(reflect_as_i128)
+                .ok_or(FfiResult::INVALID_ARGUMENT)?;
+            let generation = st
+                .field("generation")
+                .and_then(reflect_as_i128)
+                .ok_or(FfiResult::INVALID_ARGUMENT)?;
+            FfiAssetHandle::from_index(
+                asset_type,
+                u32::try_from(index).map_err(|_| FfiResult::INVALID_ARGUMENT)?,
+                u32::try_from(generation).map_err(|_| FfiResult::INVALID_ARGUMENT)?,
+            )
+        }
+        FfiAssetHandle::KIND_UUID => {
+            let uuid_str = st
+                .field("uuid")
+                .and_then(|f| f.try_downcast_ref::<String>())
+                .ok_or(FfiResult::INVALID_ARGUMENT)?;
+            let uuid_bytes = try_parse_uuid_hex(uuid_str).ok_or(FfiResult::INVALID_ARGUMENT)?;
+            FfiAssetHandle::from_uuid(asset_type, ComponentUuid::from_bytes(uuid_bytes))
+        }
+        _ => return Err(FfiResult::INVALID_ARGUMENT),
+    };
+    if handle.validate() != FfiResult::OK {
+        return Err(FfiResult::INVALID_ARGUMENT);
+    }
+    Ok(handle)
+}
+
 fn infer_tag_from_reflect(value: &dyn PartialReflect) -> Option<&'static str> {
     let path = value.reflect_type_path();
     match path {
@@ -1598,12 +1766,15 @@ fn infer_tag_from_reflect(value: &dyn PartialReflect) -> Option<&'static str> {
         "i32" => Some("i32"),
         "i64" => Some("i64"),
         "i128" => Some("i128"),
+        "isize" => Some("isize"),
         "u8" => Some("u8"),
         "u16" => Some("u16"),
         "u32" => Some("u32"),
         "u64" => Some("u64"),
         "u128" => Some("u128"),
+        "usize" => Some("usize"),
         "bool" => Some("bool"),
+        "bevy_ecs::entity::Entity" => Some("Entity"),
         "alloc::string::String" | "std::string::String" => Some("String"),
         "alloc::vec::Vec<u8>" => Some("Vec<u8>"),
         "alloc::vec::Vec<u32>" => Some("Vec<u32>"),
@@ -1617,7 +1788,7 @@ fn infer_tag_from_reflect(value: &dyn PartialReflect) -> Option<&'static str> {
 }
 
 fn decode_field_to_reflect(type_tag: &str, bytes: &[u8]) -> Option<Box<dyn PartialReflect>> {
-    match type_tag {
+    match canonical_leaf_ident(type_tag) {
         "f32" => Some(Box::new(f32::from_le_bytes(bytes.try_into().ok()?))),
         "f64" => Some(Box::new(f64::from_le_bytes(bytes.try_into().ok()?))),
         "i8" => Some(Box::new(i8::from_le_bytes(bytes.try_into().ok()?))),
@@ -1625,12 +1796,26 @@ fn decode_field_to_reflect(type_tag: &str, bytes: &[u8]) -> Option<Box<dyn Parti
         "i32" => Some(Box::new(i32::from_le_bytes(bytes.try_into().ok()?))),
         "i64" => Some(Box::new(i64::from_le_bytes(bytes.try_into().ok()?))),
         "i128" => Some(Box::new(i128::from_le_bytes(bytes.try_into().ok()?))),
+        "isize" => Some(Box::new(isize::from_le_bytes(bytes.try_into().ok()?))),
         "u8" => Some(Box::new(u8::from_le_bytes(bytes.try_into().ok()?))),
         "u16" => Some(Box::new(u16::from_le_bytes(bytes.try_into().ok()?))),
-        "u32" => Some(Box::new(u32::from_le_bytes(bytes.try_into().ok()?))),
-        "u64" => Some(Box::new(u64::from_le_bytes(bytes.try_into().ok()?))),
+        "u32" | "BamComponent" => Some(Box::new(u32::from_le_bytes(bytes.try_into().ok()?))),
+        "u64" | "Entity" | "FfiEntity" | "TargetEntity" => {
+            Some(Box::new(u64::from_le_bytes(bytes.try_into().ok()?)))
+        }
         "u128" => Some(Box::new(u128::from_le_bytes(bytes.try_into().ok()?))),
+        "usize" => Some(Box::new(usize::from_le_bytes(bytes.try_into().ok()?))),
         "bool" => Some(Box::new(*bytes.first()? != 0)),
+        "ComponentUuid" => {
+            let uuid_bytes: [u8; 16] = bytes.try_into().ok()?;
+            Some(Box::new(format_component_uuid_hyphenated(
+                ComponentUuid::from_bytes(uuid_bytes),
+            )))
+        }
+        "FfiAssetHandle" => {
+            let handle = decode_ffi_asset_handle_le_bytes(bytes).ok()?;
+            Some(Box::new(ffi_asset_handle_to_dynamic_struct(&handle).ok()?))
+        }
         "String" | "__variant" => Some(Box::new(String::from_utf8(bytes.to_vec()).ok()?)),
         "Vec<u8>" => Some(Box::new(bytes.to_vec())),
         "Vec<u32>" => {
@@ -1683,51 +1868,69 @@ fn encode_reflect_to_bytes(
     type_tag: &str,
     value: &dyn PartialReflect,
 ) -> Result<Vec<u8>, FfiResult> {
+    let canonical_tag = canonical_leaf_ident(type_tag);
+    if canonical_tag == "FfiAssetHandle" {
+        let handle = dynamic_struct_to_ffi_asset_handle(value)?;
+        return encode_ffi_asset_handle_le_bytes(&handle).map_err(|_| FfiResult::INVALID_ARGUMENT);
+    }
     if let Some(v) = value.try_downcast_ref::<f32>() {
-        return encode_number_f64(type_tag, f64::from(*v));
+        return encode_number_f64(canonical_tag, f64::from(*v));
     }
     if let Some(v) = value.try_downcast_ref::<f64>() {
-        return encode_number_f64(type_tag, *v);
+        return encode_number_f64(canonical_tag, *v);
     }
     if let Some(v) = value.try_downcast_ref::<i8>() {
-        return encode_signed_i128(type_tag, i128::from(*v));
+        return encode_signed_i128(canonical_tag, i128::from(*v));
     }
     if let Some(v) = value.try_downcast_ref::<i16>() {
-        return encode_signed_i128(type_tag, i128::from(*v));
+        return encode_signed_i128(canonical_tag, i128::from(*v));
     }
     if let Some(v) = value.try_downcast_ref::<i32>() {
-        return encode_signed_i128(type_tag, i128::from(*v));
+        return encode_signed_i128(canonical_tag, i128::from(*v));
     }
     if let Some(v) = value.try_downcast_ref::<i64>() {
-        return encode_signed_i128(type_tag, i128::from(*v));
+        return encode_signed_i128(canonical_tag, i128::from(*v));
     }
     if let Some(v) = value.try_downcast_ref::<i128>() {
-        return encode_signed_i128(type_tag, *v);
+        return encode_signed_i128(canonical_tag, *v);
+    }
+    if let Some(v) = value.try_downcast_ref::<isize>() {
+        return encode_signed_i128(canonical_tag, *v as i128);
     }
     if let Some(v) = value.try_downcast_ref::<u8>() {
-        return encode_unsigned_u128(type_tag, u128::from(*v));
+        return encode_unsigned_u128(canonical_tag, u128::from(*v));
     }
     if let Some(v) = value.try_downcast_ref::<u16>() {
-        return encode_unsigned_u128(type_tag, u128::from(*v));
+        return encode_unsigned_u128(canonical_tag, u128::from(*v));
     }
     if let Some(v) = value.try_downcast_ref::<u32>() {
-        return encode_unsigned_u128(type_tag, u128::from(*v));
+        return encode_unsigned_u128(canonical_tag, u128::from(*v));
     }
     if let Some(v) = value.try_downcast_ref::<u64>() {
-        return encode_unsigned_u128(type_tag, u128::from(*v));
+        return encode_unsigned_u128(canonical_tag, u128::from(*v));
     }
     if let Some(v) = value.try_downcast_ref::<u128>() {
-        return encode_unsigned_u128(type_tag, *v);
+        return encode_unsigned_u128(canonical_tag, *v);
+    }
+    if let Some(v) = value.try_downcast_ref::<usize>() {
+        return encode_unsigned_u128(canonical_tag, *v as u128);
+    }
+    if let Some(v) = value.try_downcast_ref::<Entity>() {
+        return encode_unsigned_u128(canonical_tag, u128::from(v.to_bits()));
     }
     if let Some(v) = value.try_downcast_ref::<bool>() {
-        if type_tag == "bool" {
+        if canonical_tag == "bool" {
             return Ok(vec![u8::from(*v)]);
         }
         return Err(FfiResult::TYPE_MISMATCH);
     }
     if let Some(v) = value.try_downcast_ref::<String>() {
-        if type_tag == "String" || type_tag == "__variant" {
+        if canonical_tag == "String" || canonical_tag == "__variant" {
             return Ok(v.as_bytes().to_vec());
+        }
+        if canonical_tag == "ComponentUuid" {
+            let uuid_bytes = try_parse_uuid_hex(v).ok_or(FfiResult::INVALID_ARGUMENT)?;
+            return Ok(uuid_bytes.to_vec());
         }
         return Err(FfiResult::TYPE_MISMATCH);
     }
@@ -1831,6 +2034,9 @@ fn encode_signed_i128(type_tag: &str, v: i128) -> Result<Vec<u8>, FfiResult> {
         "i64" => i64::try_from(v)
             .map(|x| x.to_le_bytes().to_vec())
             .map_err(|_| FfiResult::INVALID_ARGUMENT),
+        "isize" => isize::try_from(v)
+            .map(|x| x.to_le_bytes().to_vec())
+            .map_err(|_| FfiResult::INVALID_ARGUMENT),
         "i128" => Ok(v.to_le_bytes().to_vec()),
         "f32" => Ok((v as f32).to_le_bytes().to_vec()),
         "f64" => Ok((v as f64).to_le_bytes().to_vec()),
@@ -1847,10 +2053,13 @@ fn encode_unsigned_u128(type_tag: &str, v: u128) -> Result<Vec<u8>, FfiResult> {
         "u16" => u16::try_from(v)
             .map(|x| x.to_le_bytes().to_vec())
             .map_err(|_| FfiResult::INVALID_ARGUMENT),
-        "u32" => u32::try_from(v)
+        "u32" | "BamComponent" => u32::try_from(v)
             .map(|x| x.to_le_bytes().to_vec())
             .map_err(|_| FfiResult::INVALID_ARGUMENT),
-        "u64" => u64::try_from(v)
+        "u64" | "Entity" | "FfiEntity" | "TargetEntity" => u64::try_from(v)
+            .map(|x| x.to_le_bytes().to_vec())
+            .map_err(|_| FfiResult::INVALID_ARGUMENT),
+        "usize" => usize::try_from(v)
             .map(|x| x.to_le_bytes().to_vec())
             .map_err(|_| FfiResult::INVALID_ARGUMENT),
         "u128" => Ok(v.to_le_bytes().to_vec()),
@@ -1864,6 +2073,9 @@ fn encode_unsigned_u128(type_tag: &str, v: u128) -> Result<Vec<u8>, FfiResult> {
             .map(|x| x.to_le_bytes().to_vec())
             .map_err(|_| FfiResult::INVALID_ARGUMENT),
         "i64" => i64::try_from(v)
+            .map(|x| x.to_le_bytes().to_vec())
+            .map_err(|_| FfiResult::INVALID_ARGUMENT),
+        "isize" => isize::try_from(v)
             .map(|x| x.to_le_bytes().to_vec())
             .map_err(|_| FfiResult::INVALID_ARGUMENT),
         "i128" => i128::try_from(v)
@@ -1973,6 +2185,15 @@ fn reflect_value_to_json(value: &dyn PartialReflect) -> Option<Value> {
             items.push(reflect_value_to_json(elem)?);
         }
         return Some(Value::Array(items));
+    }
+    if let bevy_reflect::ReflectRef::Struct(st) = value.reflect_ref() {
+        let mut map = Map::new();
+        for (name, field) in st.iter_fields() {
+            if let Some(val) = reflect_value_to_json(field) {
+                map.insert(name.to_owned(), val);
+            }
+        }
+        return Some(Value::Object(map));
     }
     None
 }
@@ -2329,8 +2550,13 @@ fn dynamic_struct_to_bam_field_patches(
             .iter()
             .find(|f| f.name == name)
             .ok_or(FfiResult::NOT_FOUND)?;
-        let pod_kind = desc.pod_kind.ok_or(FfiResult::UNSUPPORTED)?;
-        let bytes = encode_reflect_to_bam_field_bytes(pod_kind, value)?;
+        let bytes = if is_ffi_asset_handle_desc(desc) {
+            let handle = dynamic_struct_to_ffi_asset_handle(value)?;
+            encode_ffi_asset_handle_ne_bytes(&handle).map_err(|_| FfiResult::INVALID_ARGUMENT)?
+        } else {
+            let pod_kind = desc.pod_kind.ok_or(FfiResult::UNSUPPORTED)?;
+            encode_reflect_to_bam_field_bytes(pod_kind, value)?
+        };
         if bytes.len() != desc.size {
             return Err(FfiResult::INVALID_ARGUMENT);
         }

@@ -27,12 +27,14 @@ struct UmbrellaPod {
 
 #[test]
 fn umbrella_core_exports_and_derives_work() {
-    assert_eq!(bamabi::bamabi_sys::ABI_VERSION, 0x0003_0000);
-    assert_eq!(env!("CARGO_PKG_VERSION"), "0.3.0");
+    assert_eq!(bamabi::bamabi_sys::ABI_VERSION, 0x0004_0000);
+    assert_eq!(bamabi::bamabi_sys::BAM_HOST_API_SLOT_COUNT, 90);
+    assert_eq!(env!("CARGO_PKG_VERSION"), "0.4.0");
 
     let mut app = App::new();
     app.add_plugins(AbiModPlugin::with_error_policy(ModErrorPolicy::Quarantine));
-    app.register_mod_component::<UmbrellaHealth>(
+    bamabi::ModRegistryAppExt::register_mod_component::<UmbrellaHealth>(
+        &mut app,
         ComponentOptions::new().with_raw_insert().with_default(),
     )
     .expect("register UmbrellaHealth through canonical facade crate");
@@ -45,9 +47,25 @@ fn umbrella_core_exports_and_derives_work() {
 
     let _ = core::any::type_name::<bamabi::budgets::ModBudgetLimits>();
     let _ = core::any::type_name::<bamabi::bamabi_host::ModHost>();
+    let _ = core::any::type_name::<bamabi::bamabi_host::telemetry::ModTelemetryRing>();
+    let _ = core::any::type_name::<bamabi::ModTelemetrySinkPlugin>();
     let pod = UmbrellaPod { x: 1.0, y: 2.0 };
     assert_eq!(pod.x, 1.0);
     assert_eq!(pod.y, 2.0);
+}
+
+#[cfg(feature = "dynamic-loader")]
+#[test]
+fn umbrella_dynamic_loader_trait_reexported() {
+    fn _assert_loader_ext<T: bamabi::ModLoaderAppExt>() {}
+    _assert_loader_ext::<App>();
+}
+
+#[cfg(feature = "keygen")]
+#[test]
+fn umbrella_keygen_feature_reexports_work() {
+    let _ = core::any::type_name::<bamabi::GeneratedKeypair>();
+    let _ = core::any::type_name::<bamabi::IssuedCertificate>();
 }
 
 #[cfg(feature = "strict-ffi-checks")]
@@ -140,6 +158,12 @@ fn umbrella_reflect_savegame_telemetry_reexports_work() {
     let _ = core::any::type_name::<bamabi::ModTelemetryPlugin>();
     let _ = core::any::type_name::<bamabi::telemetry::SystemTelemetryDigest64>();
     let _ = core::any::type_name::<bamabi::TelemetrySliceError>();
+    let _ = core::any::type_name::<bamabi::BrpModInfo>();
+    let _ = core::any::type_name::<bamabi::BrpSystemMetrics>();
+    let _ = core::any::type_name::<bamabi::BrpFieldSchema>();
+    let _ = core::any::type_name::<bamabi::BrpComponentSchema>();
+    let _ = core::any::type_name::<bamabi::BrpHotReloadRequest>();
+    let _ = core::any::type_name::<bamabi::bridges::BrpComponentSchema>();
 }
 
 #[cfg(feature = "sub-app-extract")]

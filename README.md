@@ -1,6 +1,6 @@
 # `bamabi`
 
-Layer 3 (**Bevy `0.20.1` companion crates & sole canonical host facade**, `#![forbid(unsafe_code)]`) for the federated **`bamabi`** (`ABI 0.3.0`, `v0.3.0`) native modding framework.
+Layer 3 (**Bevy `0.20.1` companion crates & sole canonical host facade**, `#![forbid(unsafe_code)]`) for the federated **`bamabi`** (`ABI 0.4.0`, `v0.4.0`) native modding framework.
 
 Refactored from the original [`bevy_mod_abi`](https://github.com/yaga-simha/bevy_mod_abi) monorepo into a strictly acyclic 5-repository DAG plus [`bamabi-dev-overlay`](https://github.com/yaga-simha/bamabi-dev-overlay), `bamabi` depends on Layer 0 ([`bamabi-wire`](https://github.com/yaga-simha/bamabi-wire)) and Layer 2 ([`bamabi-core`](https://github.com/yaga-simha/bamabi-core)) via GitHub `git` URLs (`branch = "main"`) with zero dependency on Layer 1 (`bamabi-tools`). It is the primary entry point for Bevy game hosts, re-exporting the slim headless `bamabi_host` runtime and wire/macro primitives alongside opt-in Bevy `0.20.1` subsystem bridges, render/material extraction, dynamic reflection/savegames/telemetry, and curated presets.
 

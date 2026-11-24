@@ -5,6 +5,11 @@ use bamabi_host_sys::loader::ExportedFieldRecord;
 use bamabi_host_sys::{
     BamFieldBytePatch, BamFieldDescriptor, BamFieldPodKind, WitnessFieldDescriptor,
 };
+use bamabi_schema::{
+    TargetLayout, WireTypeSpec, canonical_leaf_ident, format_uuid_hyphenated, lookup_wire_type,
+    try_parse_uuid_hex,
+};
+use bamabi_sys::{BamComponent, ComponentUuid, FfiAssetHandle, FfiResult};
 use bevy_asset::{
     AssetId, AssetPath, AssetServer, EphemeralHandleBehavior, HandleDeserializeProcessor,
     HandleSerializeProcessor, LoadFromPath, UntypedHandle,
@@ -14,6 +19,205 @@ use bevy_reflect::{PartialReflect, TypeRegistration, TypeRegistry};
 use core::any::TypeId;
 use serde::de::DeserializeSeed;
 use serde_json::{Map, Number, Value};
+
+/// Looks up the canonical [`WireTypeSpec`] from [`bamabi_schema`] for `type_tag` on [`TargetLayout::HOST`].
+pub(crate) fn canonical_wire_type_spec(type_tag: &str) -> Option<WireTypeSpec> {
+    lookup_wire_type(canonical_leaf_ident(type_tag), TargetLayout::HOST)
+}
+
+/// Returns `true` when `desc` describes a wire [`FfiAssetHandle`] field.
+pub(crate) fn is_ffi_asset_handle_desc(desc: &BamFieldDescriptor) -> bool {
+    canonical_wire_type_spec(&desc.type_tag)
+        .is_some_and(|spec| spec.canonical_tag == "FfiAssetHandle")
+}
+
+/// Formats a [`ComponentUuid`] as canonical hyphenated lowercase UUID string (`8-4-4-4-12`).
+pub(crate) fn format_component_uuid_hyphenated(uuid: ComponentUuid) -> String {
+    let buf = format_uuid_hyphenated(uuid.as_bytes());
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Decodes a native-endian 32-byte [`FfiAssetHandle`] wire payload and validates invariants.
+pub(crate) fn decode_ffi_asset_handle_ne_bytes(bytes: &[u8]) -> Result<FfiAssetHandle, String> {
+    decode_ffi_asset_handle_bytes_inner(bytes, u32::from_ne_bytes)
+}
+
+/// Decodes a little-endian 32-byte [`FfiAssetHandle`] witness payload and validates invariants.
+pub(crate) fn decode_ffi_asset_handle_le_bytes(bytes: &[u8]) -> Result<FfiAssetHandle, String> {
+    decode_ffi_asset_handle_bytes_inner(bytes, u32::from_le_bytes)
+}
+
+fn decode_ffi_asset_handle_bytes_inner(
+    bytes: &[u8],
+    decode_u32: fn([u8; 4]) -> u32,
+) -> Result<FfiAssetHandle, String> {
+    if bytes.len() != core::mem::size_of::<FfiAssetHandle>() {
+        return Err(format!(
+            "FfiAssetHandle expected {} bytes, got {}",
+            core::mem::size_of::<FfiAssetHandle>(),
+            bytes.len()
+        ));
+    }
+    let kind = bytes[0];
+    let reserved0 = [bytes[1], bytes[2], bytes[3]];
+    let asset_type = BamComponent::from_raw(decode_u32([bytes[4], bytes[5], bytes[6], bytes[7]]));
+    let index = decode_u32([bytes[8], bytes[9], bytes[10], bytes[11]]);
+    let generation = decode_u32([bytes[12], bytes[13], bytes[14], bytes[15]]);
+    let mut uuid_bytes = [0u8; 16];
+    uuid_bytes.copy_from_slice(&bytes[16..32]);
+    let handle = FfiAssetHandle {
+        kind,
+        reserved0,
+        asset_type,
+        index,
+        generation,
+        uuid: ComponentUuid::from_bytes(uuid_bytes),
+    };
+    if handle.validate() != FfiResult::OK {
+        return Err(format!(
+            "invalid FfiAssetHandle payload (kind={}, reserved0={:?})",
+            handle.kind, handle.reserved0
+        ));
+    }
+    Ok(handle)
+}
+
+/// Encodes an [`FfiAssetHandle`] into native-endian 32-byte wire representation.
+pub(crate) fn encode_ffi_asset_handle_ne_bytes(handle: &FfiAssetHandle) -> Result<Vec<u8>, String> {
+    encode_ffi_asset_handle_bytes_inner(handle, u32::to_ne_bytes)
+}
+
+/// Encodes an [`FfiAssetHandle`] into little-endian 32-byte witness representation.
+pub(crate) fn encode_ffi_asset_handle_le_bytes(handle: &FfiAssetHandle) -> Result<Vec<u8>, String> {
+    encode_ffi_asset_handle_bytes_inner(handle, u32::to_le_bytes)
+}
+
+fn encode_ffi_asset_handle_bytes_inner(
+    handle: &FfiAssetHandle,
+    encode_u32: fn(u32) -> [u8; 4],
+) -> Result<Vec<u8>, String> {
+    if handle.validate() != FfiResult::OK {
+        return Err(format!(
+            "invalid FfiAssetHandle value (kind={}, reserved0={:?})",
+            handle.kind, handle.reserved0
+        ));
+    }
+    let mut out = Vec::with_capacity(core::mem::size_of::<FfiAssetHandle>());
+    out.push(handle.kind);
+    out.extend_from_slice(&handle.reserved0);
+    out.extend_from_slice(&encode_u32(handle.asset_type.to_raw()));
+    out.extend_from_slice(&encode_u32(handle.index));
+    out.extend_from_slice(&encode_u32(handle.generation));
+    out.extend_from_slice(handle.uuid.as_bytes());
+    Ok(out)
+}
+
+/// Converts a validated [`FfiAssetHandle`] into canonical JSON.
+pub(crate) fn ffi_asset_handle_to_json(handle: &FfiAssetHandle) -> Result<Value, String> {
+    if handle.validate() != FfiResult::OK {
+        return Err(format!(
+            "invalid FfiAssetHandle value (kind={}, reserved0={:?})",
+            handle.kind, handle.reserved0
+        ));
+    }
+    let kind = match handle.kind {
+        FfiAssetHandle::KIND_NONE => "none",
+        FfiAssetHandle::KIND_INDEX => "index",
+        FfiAssetHandle::KIND_UUID => "uuid",
+        other => {
+            return Err(format!("invalid FfiAssetHandle kind {other}"));
+        }
+    };
+    let mut obj = Map::with_capacity(5);
+    obj.insert("kind".to_owned(), Value::String(kind.to_owned()));
+    obj.insert(
+        "asset_type".to_owned(),
+        Value::from(handle.asset_type.to_raw()),
+    );
+    obj.insert("index".to_owned(), Value::from(handle.index));
+    obj.insert("generation".to_owned(), Value::from(handle.generation));
+    obj.insert(
+        "uuid".to_owned(),
+        Value::String(format_component_uuid_hyphenated(handle.uuid)),
+    );
+    Ok(Value::Object(obj))
+}
+
+/// Parses a JSON [`Value`] into a validated [`FfiAssetHandle`].
+pub(crate) fn json_to_ffi_asset_handle(
+    field_name: &str,
+    val: &Value,
+) -> Result<FfiAssetHandle, String> {
+    if val.is_null() {
+        return Ok(FfiAssetHandle::NONE);
+    }
+    let obj = val
+        .as_object()
+        .ok_or_else(|| format!("field '{field_name}' expected FfiAssetHandle object or null"))?;
+    let kind_val = obj
+        .get("kind")
+        .ok_or_else(|| format!("field '{field_name}' FfiAssetHandle missing 'kind'"))?;
+    let kind = match kind_val {
+        Value::String(s) => match s.as_str() {
+            "none" | "NONE" => FfiAssetHandle::KIND_NONE,
+            "index" | "INDEX" => FfiAssetHandle::KIND_INDEX,
+            "uuid" | "UUID" => FfiAssetHandle::KIND_UUID,
+            other => {
+                return Err(format!(
+                    "field '{field_name}' unknown FfiAssetHandle kind '{other}'"
+                ));
+            }
+        },
+        other => u8::try_from(json_as_i128(field_name, other)?)
+            .map_err(|_| format!("field '{field_name}' FfiAssetHandle kind out of range"))?,
+    };
+    let asset_type = match obj.get("asset_type") {
+        Some(v) => BamComponent::from_raw(
+            u32::try_from(json_as_i128(field_name, v)?)
+                .map_err(|_| format!("field '{field_name}' asset_type out of range for u32"))?,
+        ),
+        None => BamComponent::INVALID,
+    };
+    let handle = match kind {
+        FfiAssetHandle::KIND_NONE => FfiAssetHandle::NONE,
+        FfiAssetHandle::KIND_INDEX => {
+            let index = u32::try_from(json_as_i128(
+                field_name,
+                obj.get("index")
+                    .ok_or_else(|| format!("field '{field_name}' missing 'index'"))?,
+            )?)
+            .map_err(|_| format!("field '{field_name}' index out of range for u32"))?;
+            let generation = u32::try_from(json_as_i128(
+                field_name,
+                obj.get("generation")
+                    .ok_or_else(|| format!("field '{field_name}' missing 'generation'"))?,
+            )?)
+            .map_err(|_| format!("field '{field_name}' generation out of range for u32"))?;
+            FfiAssetHandle::from_index(asset_type, index, generation)
+        }
+        FfiAssetHandle::KIND_UUID => {
+            let uuid_str = obj
+                .get("uuid")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("field '{field_name}' missing string 'uuid'"))?;
+            let uuid_bytes = try_parse_uuid_hex(uuid_str)
+                .ok_or_else(|| format!("field '{field_name}' invalid UUID '{uuid_str}'"))?;
+            FfiAssetHandle::from_uuid(asset_type, ComponentUuid::from_bytes(uuid_bytes))
+        }
+        other => {
+            return Err(format!(
+                "field '{field_name}' invalid FfiAssetHandle kind {other}"
+            ));
+        }
+    };
+    if handle.validate() != FfiResult::OK {
+        return Err(format!(
+            "field '{field_name}' produced invalid FfiAssetHandle (kind={})",
+            handle.kind
+        ));
+    }
+    Ok(handle)
+}
 
 /// Encodes `bytes` as lowercase hexadecimal.
 pub(crate) fn encode_hex_lower(bytes: &[u8]) -> String {
@@ -277,10 +481,22 @@ pub(crate) fn json_map_to_bam_field_patches(
             .iter()
             .find(|f| f.name == *k)
             .ok_or_else(|| format!("unknown field '{k}'"))?;
-        let pod_kind = desc
-            .pod_kind
-            .ok_or_else(|| format!("field '{k}' is opaque/non-POD and cannot be mutated"))?;
-        let bytes = encode_json_to_pod_field_bytes(k, pod_kind, v)?;
+        let bytes = if is_ffi_asset_handle_desc(desc) {
+            if desc.size != core::mem::size_of::<FfiAssetHandle>() {
+                return Err(format!(
+                    "field '{k}' FfiAssetHandle size mismatch: descriptor has {} bytes, expected {}",
+                    desc.size,
+                    core::mem::size_of::<FfiAssetHandle>()
+                ));
+            }
+            let handle = json_to_ffi_asset_handle(k, v)?;
+            encode_ffi_asset_handle_ne_bytes(&handle)?
+        } else {
+            let pod_kind = desc
+                .pod_kind
+                .ok_or_else(|| format!("field '{k}' is opaque/non-POD and cannot be mutated"))?;
+            encode_json_to_pod_field_bytes(k, pod_kind, v)?
+        };
         patches.push(BamFieldBytePatch {
             offset: desc.offset,
             bytes,
@@ -302,20 +518,35 @@ pub(crate) fn exported_records_to_json_map(records: &[ExportedFieldRecord]) -> M
 
 /// Decodes an exported witness record payload into a JSON [`Value`].
 pub(crate) fn decode_witness_record_to_json(type_tag: &str, bytes: &[u8]) -> Option<Value> {
-    match type_tag {
+    match canonical_leaf_ident(type_tag) {
         "bool" => Some(Value::Bool(*bytes.first()? != 0)),
         "u8" => Some(Value::from(*bytes.first()?)),
         "i8" => Some(Value::from(i8::from_le_bytes(bytes.try_into().ok()?))),
         "u16" => Some(Value::from(u16::from_le_bytes(bytes.try_into().ok()?))),
         "i16" => Some(Value::from(i16::from_le_bytes(bytes.try_into().ok()?))),
-        "u32" => Some(Value::from(u32::from_le_bytes(bytes.try_into().ok()?))),
+        "u32" | "BamComponent" => Some(Value::from(u32::from_le_bytes(bytes.try_into().ok()?))),
         "i32" => Some(Value::from(i32::from_le_bytes(bytes.try_into().ok()?))),
-        "u64" | "Entity" | "FfiEntity" => {
+        "u64" | "Entity" | "FfiEntity" | "TargetEntity" => {
             Some(Value::from(u64::from_le_bytes(bytes.try_into().ok()?)))
         }
         "i64" => Some(Value::from(i64::from_le_bytes(bytes.try_into().ok()?))),
+        "usize" => Some(Value::from(
+            usize::from_le_bytes(bytes.try_into().ok()?) as u64
+        )),
+        "isize" => Some(Value::from(
+            isize::from_le_bytes(bytes.try_into().ok()?) as i64
+        )),
         "f32" => Some(f32_to_json(f32::from_le_bytes(bytes.try_into().ok()?))),
         "f64" => Some(f64_to_json(f64::from_le_bytes(bytes.try_into().ok()?))),
+        "ComponentUuid" => {
+            let uuid_bytes: [u8; 16] = bytes.try_into().ok()?;
+            Some(Value::String(format_component_uuid_hyphenated(
+                ComponentUuid::from_bytes(uuid_bytes),
+            )))
+        }
+        "FfiAssetHandle" => decode_ffi_asset_handle_le_bytes(bytes)
+            .ok()
+            .and_then(|h| ffi_asset_handle_to_json(&h).ok()),
         "String" | "__variant" => core::str::from_utf8(bytes)
             .ok()
             .map(|s| Value::String(s.to_owned())),
@@ -392,7 +623,7 @@ pub(crate) fn encode_json_to_witness_record(
     type_tag: &str,
     val: &Value,
 ) -> Result<ExportedFieldRecord, String> {
-    let bytes = match type_tag {
+    let bytes = match canonical_leaf_ident(type_tag) {
         "bool" => {
             vec![u8::from(val.as_bool().ok_or_else(|| {
                 format!("field '{field_name}' expected bool")
@@ -410,18 +641,26 @@ pub(crate) fn encode_json_to_witness_record(
         "i16" => i16::try_from(json_as_i128(field_name, val)?)
             .map(|x| x.to_le_bytes().to_vec())
             .map_err(|_| format!("field '{field_name}' out of range for i16"))?,
-        "u32" => u32::try_from(json_as_i128(field_name, val)?)
+        "u32" | "BamComponent" => u32::try_from(json_as_i128(field_name, val)?)
             .map(|x| x.to_le_bytes().to_vec())
             .map_err(|_| format!("field '{field_name}' out of range for u32"))?,
         "i32" => i32::try_from(json_as_i128(field_name, val)?)
             .map(|x| x.to_le_bytes().to_vec())
             .map_err(|_| format!("field '{field_name}' out of range for i32"))?,
-        "u64" | "Entity" | "FfiEntity" => u64::try_from(json_as_i128(field_name, val)?)
-            .map(|x| x.to_le_bytes().to_vec())
-            .map_err(|_| format!("field '{field_name}' out of range for u64"))?,
+        "u64" | "Entity" | "FfiEntity" | "TargetEntity" => {
+            u64::try_from(json_as_i128(field_name, val)?)
+                .map(|x| x.to_le_bytes().to_vec())
+                .map_err(|_| format!("field '{field_name}' out of range for u64"))?
+        }
         "i64" => i64::try_from(json_as_i128(field_name, val)?)
             .map(|x| x.to_le_bytes().to_vec())
             .map_err(|_| format!("field '{field_name}' out of range for i64"))?,
+        "usize" => usize::try_from(json_as_i128(field_name, val)?)
+            .map(|x| x.to_le_bytes().to_vec())
+            .map_err(|_| format!("field '{field_name}' out of range for usize"))?,
+        "isize" => isize::try_from(json_as_i128(field_name, val)?)
+            .map(|x| x.to_le_bytes().to_vec())
+            .map_err(|_| format!("field '{field_name}' out of range for isize"))?,
         "u128" => u128::try_from(json_as_i128(field_name, val)?)
             .map(|x| x.to_le_bytes().to_vec())
             .map_err(|_| format!("field '{field_name}' out of range for u128"))?,
@@ -430,6 +669,18 @@ pub(crate) fn encode_json_to_witness_record(
             .to_le_bytes()
             .to_vec(),
         "f64" => json_as_f64(field_name, val)?.to_le_bytes().to_vec(),
+        "ComponentUuid" => {
+            let uuid_str = val
+                .as_str()
+                .ok_or_else(|| format!("field '{field_name}' expected UUID string"))?;
+            try_parse_uuid_hex(uuid_str)
+                .ok_or_else(|| format!("field '{field_name}' invalid UUID '{uuid_str}'"))?
+                .to_vec()
+        }
+        "FfiAssetHandle" => {
+            let handle = json_to_ffi_asset_handle(field_name, val)?;
+            encode_ffi_asset_handle_le_bytes(&handle)?
+        }
         "String" | "__variant" => val
             .as_str()
             .ok_or_else(|| format!("field '{field_name}' expected string"))?

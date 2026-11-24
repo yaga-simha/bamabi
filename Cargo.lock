@@ -151,9 +151,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.104"
+version = "1.0.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+checksum = "2cb931c189b85683d69a5cfad41d4d418671e1ac413dd209f3f2fc31e3cfd902"
 
 [[package]]
 name = "approx"
@@ -313,7 +313,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "bamabi"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bamabi_bridges",
  "bamabi_host",
@@ -338,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "bamabi_bridges"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bamabi_host",
  "bamabi_host_sys",
@@ -377,8 +377,8 @@ dependencies = [
 
 [[package]]
 name = "bamabi_host"
-version = "0.3.0"
-source = "git+https://github.com/yaga-simha/bamabi-core.git?branch=main#9fd8155a6f34339896a57b072c8871cee733b1b3"
+version = "0.4.0"
+source = "git+https://github.com/yaga-simha/bamabi-core.git?branch=main#182a7f3e040e8d861f3c458909c7f2a0fb6bbd30"
 dependencies = [
  "bamabi_host_sys",
  "bamabi_macros",
@@ -395,8 +395,8 @@ dependencies = [
 
 [[package]]
 name = "bamabi_host_sys"
-version = "0.3.0"
-source = "git+https://github.com/yaga-simha/bamabi-core.git?branch=main#9fd8155a6f34339896a57b072c8871cee733b1b3"
+version = "0.4.0"
+source = "git+https://github.com/yaga-simha/bamabi-core.git?branch=main#182a7f3e040e8d861f3c458909c7f2a0fb6bbd30"
 dependencies = [
  "arc-swap",
  "bamabi_sys",
@@ -414,9 +414,10 @@ dependencies = [
 
 [[package]]
 name = "bamabi_macros"
-version = "0.3.0"
-source = "git+https://github.com/yaga-simha/bamabi-wire.git?branch=main#433df66cca7388e4d4bae80c649060261612af57"
+version = "0.4.0"
+source = "git+https://github.com/yaga-simha/bamabi-wire.git?branch=main#215fc46f213d760c5f167d3f7841d69a55697ab3"
 dependencies = [
+ "bamabi_schema",
  "proc-macro-crate",
  "proc-macro2",
  "quote",
@@ -425,8 +426,8 @@ dependencies = [
 
 [[package]]
 name = "bamabi_manifest"
-version = "0.3.0"
-source = "git+https://github.com/yaga-simha/bamabi-tools.git?branch=main#e57356615fb356619c7a5194bc928dddf909cf85"
+version = "0.4.0"
+source = "git+https://github.com/yaga-simha/bamabi-tools.git?branch=main#040b4696127461ee0b58b7f2b8205bf0e663d3cf"
 dependencies = [
  "bamabi_sys",
  "semver",
@@ -436,11 +437,12 @@ dependencies = [
 
 [[package]]
 name = "bamabi_reflect"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bamabi_host",
  "bamabi_host_sys",
  "bamabi_macros",
+ "bamabi_schema",
  "bamabi_sys",
  "bevy-settings",
  "bevy_app",
@@ -456,7 +458,7 @@ dependencies = [
 
 [[package]]
 name = "bamabi_render"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bamabi_bridges",
  "bamabi_host",
@@ -482,22 +484,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "bamabi_schema"
+version = "0.4.0"
+source = "git+https://github.com/yaga-simha/bamabi-wire.git?branch=main#215fc46f213d760c5f167d3f7841d69a55697ab3"
+
+[[package]]
 name = "bamabi_sdk_gen"
-version = "0.3.0"
-source = "git+https://github.com/yaga-simha/bamabi-wire.git?branch=main#433df66cca7388e4d4bae80c649060261612af57"
+version = "0.4.0"
+source = "git+https://github.com/yaga-simha/bamabi-wire.git?branch=main#215fc46f213d760c5f167d3f7841d69a55697ab3"
 dependencies = [
  "bamabi_sys",
 ]
 
 [[package]]
 name = "bamabi_sys"
-version = "0.3.0"
-source = "git+https://github.com/yaga-simha/bamabi-wire.git?branch=main#433df66cca7388e4d4bae80c649060261612af57"
+version = "0.4.0"
+source = "git+https://github.com/yaga-simha/bamabi-wire.git?branch=main#215fc46f213d760c5f167d3f7841d69a55697ab3"
+dependencies = [
+ "bamabi_schema",
+ "serde",
+]
 
 [[package]]
 name = "bamabi_trust"
-version = "0.3.0"
-source = "git+https://github.com/yaga-simha/bamabi-tools.git?branch=main#e57356615fb356619c7a5194bc928dddf909cf85"
+version = "0.4.0"
+source = "git+https://github.com/yaga-simha/bamabi-tools.git?branch=main#040b4696127461ee0b58b7f2b8205bf0e663d3cf"
 dependencies = [
  "ed25519-dalek",
  "sha2",
@@ -509,11 +520,12 @@ dependencies = [
 
 [[package]]
 name = "bamabi_watcher"
-version = "0.3.0"
-source = "git+https://github.com/yaga-simha/bamabi-core.git?branch=main#9fd8155a6f34339896a57b072c8871cee733b1b3"
+version = "0.4.0"
+source = "git+https://github.com/yaga-simha/bamabi-core.git?branch=main#182a7f3e040e8d861f3c458909c7f2a0fb6bbd30"
 dependencies = [
  "bamabi_host",
  "bamabi_host_sys",
+ "bamabi_sys",
  "bevy_app",
  "bevy_ecs",
  "notify-debouncer-full",
@@ -549,7 +561,7 @@ dependencies = [
  "bevy_time",
  "serde",
  "thiserror 2.0.21",
- "toml 1.2.1+spec-1.1.0",
+ "toml 1.2.2+spec-1.1.0",
  "web-sys",
 ]
 
@@ -1176,7 +1188,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
- "toml_edit 0.25.19+spec-1.1.0",
+ "toml_edit 0.25.20+spec-1.1.0",
 ]
 
 [[package]]
@@ -2046,9 +2058,9 @@ checksum = "776dfebd015e2d8732c684a2c71003674ccb49457b539b9e82151ba38e96dd7c"
 
 [[package]]
 name = "cc"
-version = "1.11.2"
+version = "1.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45"
+checksum = "02f0e023adb368345ce0ca6cdfc0f24a06554468d0e8503e14a0841de79bfa69"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -2655,7 +2667,7 @@ version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6688bc1294fe7117d788937b6c53480169b29c566954af490830d4c09da9516a"
 dependencies = [
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "linebender_resource_handle",
  "memmap2",
  "parlance",
@@ -2877,9 +2889,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.17.1"
+version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+checksum = "735eaa21a6a5ffb2e84362faaeb90c05ba8e19797ca30428478cb6ea3a4921bc"
 dependencies = [
  "foldhash 0.2.0",
 ]
@@ -3069,7 +3081,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "serde",
  "serde_core",
 ]
@@ -3392,9 +3404,9 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "litrs"
-version = "1.0.1"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
+checksum = "02b614978e47ce529faee66579f2b2fe19c94aa96d910a6a9a8043b2b02d8175"
 
 [[package]]
 name = "lock_api"
@@ -3517,7 +3529,7 @@ dependencies = [
  "cfg_aliases",
  "codespan-reporting",
  "half",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "indexmap",
  "libm",
  "log",
@@ -3536,7 +3548,7 @@ version = "30.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14474170feb673cfb18b3565111a9869797cc1d290fb9ec969c53f5e1e231c6d"
 dependencies = [
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "indexmap",
  "rustc-hash 1.1.0",
  "serde",
@@ -3999,7 +4011,7 @@ checksum = "22d2ff88bd3f7d68d1d9b09c7e6209f9a8e8c05088295140a2bcf2e9b17038c5"
 dependencies = [
  "fontique",
  "harfrust",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "icu_normalizer",
  "icu_properties",
  "icu_segmenter",
@@ -4154,7 +4166,7 @@ version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
 dependencies = [
- "toml_edit 0.25.19+spec-1.1.0",
+ "toml_edit 0.25.20+spec-1.1.0",
 ]
 
 [[package]]
@@ -4473,6 +4485,10 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "send_wrapper"
@@ -4896,9 +4912,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "1.2.1+spec-1.1.0"
+version = "1.2.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5755c51863cdac711f1956baf8eb9588e060755f7d3c4c979e70ea1e1f32cd7"
+checksum = "5426cb1b964690d913f6c5c1a1ae0b42f428ec506bb4d452876d7a209c9bca3b"
 dependencies = [
  "indexmap",
  "serde_core",
@@ -4943,9 +4959,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.25.19+spec-1.1.0"
+version = "0.25.20+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd43688c4858d7264ae1cf9a9f874a67c3feb74a883b1cd7bebd6a4ea8307218"
+checksum = "e76360e201d6dbd6583e17795ba71a88f47365a9139c8450a7979c32303b8e73"
 dependencies = [
  "indexmap",
  "toml_datetime 1.1.3+spec-1.1.0",
@@ -4955,9 +4971,9 @@ dependencies = [
 
 [[package]]
 name = "toml_parser"
-version = "1.1.5+spec-1.1.0"
+version = "1.1.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
+checksum = "e6769c452d71ba30696c6b37770c439a9cc9110f47f7d5cdbeda79840ef5ea31"
 dependencies = [
  "winnow 1.0.5",
 ]
@@ -5174,9 +5190,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "walkdir"
-version = "2.5.0"
+version = "2.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
+checksum = "b42e295b7452c4604982280d8586001fcad9b8b201cac67bca9771e7a7475403"
 dependencies = [
  "same-file",
  "winapi-util",
@@ -5300,7 +5316,7 @@ dependencies = [
  "num-traits",
  "serde",
  "thiserror 2.0.21",
- "toml 1.2.1+spec-1.1.0",
+ "toml 1.2.2+spec-1.1.0",
  "wesl-core",
  "wesl-macros",
  "wgsl-parse",
@@ -5337,7 +5353,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "document-features",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "log",
  "portable-atomic",
  "profiling",
@@ -5362,7 +5378,7 @@ dependencies = [
  "bytemuck",
  "cfg_aliases",
  "document-features",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "indexmap",
  "log",
  "naga",
@@ -5416,7 +5432,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "gpu-allocator",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "libc",
  "libloading",
  "log",
@@ -5839,18 +5855,18 @@ checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
 
 [[package]]
 name = "zerocopy"
-version = "0.8.63"
+version = "0.8.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5fe1f8f1b06191a00962174c61aa5005e0bb391a6d80d07e24d115c01a92ed8"
+checksum = "ed43f3060383c64b000f3c630550aebdfa9d3b76d48de32390483dd2cc7e0865"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.63"
+version = "0.8.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "863ad3ac83293fb4d740aedbfdc9240dd8d1a50c1099acd76ce80ce7c7230c7f"
+checksum = "a5cbd820fe3e35fb38c83b6dc7e6b1618bc46e0cd10073ae94e8d52dc468d8b9"
 dependencies = [
  "proc-macro2",
  "quote",

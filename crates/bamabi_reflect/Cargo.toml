@@ -18,9 +18,10 @@ workspace = true
 default = []
 
 [dependencies]
-bamabi_sys = { workspace = true }
+bamabi_schema = { workspace = true, features = ["alloc"] }
+bamabi_sys = { workspace = true, features = ["serde"] }
 bamabi_host_sys = { workspace = true, features = ["bridge-reflect"] }
-bamabi_host = { workspace = true }
+bamabi_host = { workspace = true, features = ["dynamic-loader"] }
 bevy_app = { workspace = true, features = ["bevy_reflect"] }
 bevy_asset = { workspace = true }
 bevy_ecs = { workspace = true, features = ["bevy_reflect"] }

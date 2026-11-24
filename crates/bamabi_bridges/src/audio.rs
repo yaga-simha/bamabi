@@ -914,11 +914,7 @@ const _: () = {
     assert!(core::mem::align_of::<FfiAudioPlayerSpec>() == 4);
     assert!(core::mem::size_of::<FfiSpatialAudioSinkControl>() == 56);
     assert!(core::mem::align_of::<FfiSpatialAudioSinkControl>() == 4);
-};
-
-#[allow(dead_code)]
-fn _assert_all_audio_wire_types_are_abi_pod() {
     assert_abi_pod::<FfiAudioPlaybackSettings>();
     assert_abi_pod::<FfiAudioPlayerSpec>();
     assert_abi_pod::<FfiSpatialAudioSinkControl>();
-}
+};

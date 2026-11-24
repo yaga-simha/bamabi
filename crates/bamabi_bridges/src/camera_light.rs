@@ -1807,10 +1807,6 @@ const _: () = {
         assert!(core::mem::size_of::<FfiSolariLighting>() == 44);
         assert!(core::mem::align_of::<FfiSolariLighting>() == 4);
     }
-};
-
-#[allow(dead_code)]
-fn _assert_all_camera_light_wire_types_are_abi_pod() {
     #[cfg(feature = "bridge-camera-2d")]
     assert_abi_pod::<FfiCamera2d>();
     #[cfg(feature = "bridge-light")]
@@ -1824,4 +1820,4 @@ fn _assert_all_camera_light_wire_types_are_abi_pod() {
     assert_abi_pod::<FfiPanOrbitCamera>();
     #[cfg(feature = "bridge-solari")]
     assert_abi_pod::<FfiSolariLighting>();
-}
+};

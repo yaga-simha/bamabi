@@ -1,6 +1,6 @@
 # `bamabi_render`
 
-Safe (`#![forbid(unsafe_code)]`) multi-world `SubApp` extraction, data-driven `.wesl` shaders, `AlignedVec`-backed `ShaderBuffer` storage assets, 2D/3D material modding, opt-in mesh-shader pipelines, and bounded GPU device-loss recovery for [`bamabi`](../bamabi) (`ABI 0.3.0`, `v0.3.0`, Layer 3 in [`bamabi`](../../README.md)).
+Safe (`#![forbid(unsafe_code)]`) multi-world `SubApp` extraction, data-driven `.wesl` shaders, `AlignedVec`-backed `ShaderBuffer` storage assets, 2D/3D material modding, opt-in mesh-shader pipelines, and bounded GPU device-loss recovery for [`bamabi`](../bamabi) (`ABI 0.4.0`, `v0.4.0`, Layer 3 in [`bamabi`](../../README.md)).
 
 ## Standalone Usage
 

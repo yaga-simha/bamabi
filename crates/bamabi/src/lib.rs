@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-//! Zero-serialization, asymmetric C-ABI (`ABI 0.3.0`) native modding framework for Bevy ECS (`v0.20+`).
+//! Zero-serialization, asymmetric C-ABI (`ABI 0.4.0`) native modding framework for Bevy ECS (`v0.20+`).
 //!
 //! `bamabi` is the canonical top-level host facade crate (matching the repository name
 //! `https://github.com/yaga-simha/bamabi`). It re-exports [`bamabi_host`],
@@ -17,7 +17,7 @@
 //! at runtime requires navigating three systems constraints:
 //!
 //! 1. **Zero Shared Rust ABI Assumptions:** Rust provides no stable cross-compiler ABI.
-//!    `bamabi` communicates strictly over an `extern "C"` boundary (`ABI 0.3.0`), allowing
+//!    `bamabi` communicates strictly over an `extern "C"` boundary (`ABI 0.4.0`), allowing
 //!    guest mods to be compiled with different `rustc` versions or written in ISO C99, C++17/20,
 //!    or Zig.
 //! 2. **Zero Serialization Overhead:** Host ECS `Table` columns are exposed directly as
@@ -37,8 +37,9 @@
 //! ## 1. Add `AbiModPlugin` and Expose Components, Resources & Sets
 //!
 //! Derive [`ModComponent`] on `#[repr(C)]` Bevy components (or [`AbiPod`] on plain-old-data
-//! types), register them on your `App` via [`ModAppExt`], expose host `SystemSet`s via
-//! [`ModAppExt::register_mod_visible_set`], and add [`AbiModPlugin`]:
+//! types), register them on your `App` via [`ModAppExt`] (or [`ModRegistryAppExt`] in
+//! `static-only` builds), expose host `SystemSet`s via [`ModAppExt::register_mod_visible_set`],
+//! and add [`AbiModPlugin`]:
 //!
 //! ```no_run
 //! use bevy_app::App;
@@ -140,12 +141,20 @@
 //!
 //! ## Core Host & Watcher
 //!
+//! - `dynamic-loader` *(default)*: Enables dynamic `.so`/`.dylib`/`.dll` loading via `libloading`
+//!   ([`ModLoaderAppExt`], directory DAG loading, and on-disk hot-reload).
+//! - `static-only`: Opt-in static/in-memory-only host profile (`ModRegistryAppExt` +
+//!   `InMemoryModEntrypoints`) without requiring `dynamic-loader`.
+//! - `cranelift-object-loader`: Enables pure-Rust in-memory relocatable object (`.o`) loading via
+//!   `InMemoryObjectLoader`.
 //! - `strict-ffi-checks`: Enables additional runtime FFI layout and pointer validation in
 //!   `bamabi_host`.
 //! - `diagnostics`: Enables optional diagnostic instrumentation in `bamabi_host`.
 //! - `signature-verification`: Enables optional pure-Rust OpenSSH `SSHSIG`, Ed25519 CA
 //!   certificate, `SSHKRL`, `.bam_sig`, and `.bampack` pre-load cryptographic verification
 //!   (`ModTrustPolicy`).
+//! - `keygen`: Enables Ed25519 keypair generation and OpenSSH certificate issuance utilities
+//!   (implies `signature-verification`).
 //! - `hot-reload-watcher`: Enables debounced filesystem hot-reload watching (`ModHotReloadPlugin`).
 //!
 //! ## Curated Bridge Presets
@@ -309,7 +318,8 @@ pub mod bridges {
         BRP_METHOD_BAM_COMPONENT_SCHEMAS, BRP_METHOD_BAM_HOT_RELOAD, BRP_METHOD_BAM_LIST_MODS,
         BRP_METHOD_BAM_SYSTEM_METRICS, BRP_METHOD_GET_COMPONENTS, BRP_METHOD_GET_RESOURCES,
         BRP_METHOD_INSERT_COMPONENTS, BRP_METHOD_LIST_COMPONENTS, BRP_METHOD_MUTATE_COMPONENTS,
-        BRP_METHOD_MUTATE_RESOURCES, ComponentMigrationContext, CustomHotReloadHandler,
+        BRP_METHOD_MUTATE_RESOURCES, BrpComponentSchema, BrpFieldSchema, BrpHotReloadRequest,
+        BrpModInfo, BrpSystemMetrics, ComponentMigrationContext, CustomHotReloadHandler,
         EphemeralHandleBehavior, HotReloadOutcome, HotReloadRequest, MOD_SAVE_ARCHIVE_VERSION,
         MOD_SAVE_BINARY_MAGIC, MigratedComponentPayload, ModComponentMigrator, ModHotReloadQueue,
         ModReflectAppExt, ModReflectError, ModReflectPlugin, ModReflectRegistry,
@@ -320,7 +330,7 @@ pub mod bridges {
         ModTelemetryRemoteExt, ModTelemetryTransport, ModTelemetryWorldExt,
         SYSTEM_TELEMETRY_DIGEST_SIZE, SYSTEM_TELEMETRY_DIGEST_VERSION, SYSTEM_TELEMETRY_MAGIC,
         SavedComponentEntry, SavedComponentFormat, SavedComponentHeader, SavedComponentPayload,
-        SavedEntityRecord, SavedFieldHeader, SavedModMetadata, SummaryTickTableStats,
+        SavedEntityRecord, SavedFieldHeader, SavedModMetadata, ScheduleId, SummaryTickTableStats,
         SystemExecutionSample, SystemMetricSnapshot, SystemTelemetryDigest64,
         SystemTelemetryMetrics, TELEMETRY_FLAG_BUDGET_BREACHED, TELEMETRY_FLAG_FAULTED,
         TELEMETRY_FLAG_QUARANTINED, TELEMETRY_FLAG_SUMMARY_TICK_ACTIVE, TelemetryFrameError,
@@ -429,7 +439,8 @@ pub use bamabi_reflect::{
     BRP_METHOD_BAM_COMPONENT_SCHEMAS, BRP_METHOD_BAM_HOT_RELOAD, BRP_METHOD_BAM_LIST_MODS,
     BRP_METHOD_BAM_SYSTEM_METRICS, BRP_METHOD_GET_COMPONENTS, BRP_METHOD_GET_RESOURCES,
     BRP_METHOD_INSERT_COMPONENTS, BRP_METHOD_LIST_COMPONENTS, BRP_METHOD_MUTATE_COMPONENTS,
-    BRP_METHOD_MUTATE_RESOURCES, ComponentMigrationContext, CustomHotReloadHandler,
+    BRP_METHOD_MUTATE_RESOURCES, BrpComponentSchema, BrpFieldSchema, BrpHotReloadRequest,
+    BrpModInfo, BrpSystemMetrics, ComponentMigrationContext, CustomHotReloadHandler,
     EphemeralHandleBehavior, HotReloadOutcome, HotReloadRequest, MOD_SAVE_ARCHIVE_VERSION,
     MOD_SAVE_BINARY_MAGIC, MigratedComponentPayload, ModComponentMigrator, ModHotReloadQueue,
     ModReflectAppExt, ModReflectError, ModReflectPlugin, ModReflectRegistry, ModReflectRemoteExt,
@@ -439,7 +450,7 @@ pub use bamabi_reflect::{
     ModTelemetryPlugin, ModTelemetryRecorder, ModTelemetryRemoteExt, ModTelemetryTransport,
     ModTelemetryWorldExt, SYSTEM_TELEMETRY_DIGEST_SIZE, SYSTEM_TELEMETRY_DIGEST_VERSION,
     SYSTEM_TELEMETRY_MAGIC, SavedComponentEntry, SavedComponentFormat, SavedComponentHeader,
-    SavedComponentPayload, SavedEntityRecord, SavedFieldHeader, SavedModMetadata,
+    SavedComponentPayload, SavedEntityRecord, SavedFieldHeader, SavedModMetadata, ScheduleId,
     SummaryTickTableStats, SystemExecutionSample, SystemMetricSnapshot, SystemTelemetryDigest64,
     SystemTelemetryMetrics, TELEMETRY_FLAG_BUDGET_BREACHED, TELEMETRY_FLAG_FAULTED,
     TELEMETRY_FLAG_QUARANTINED, TELEMETRY_FLAG_SUMMARY_TICK_ACTIVE, TelemetryFrameError,

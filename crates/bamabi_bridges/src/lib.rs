@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-//! Safe (`#![forbid(unsafe_code)]`) optional Bevy subsystem bridges for `bamabi` (`ABI 0.3.0`,
+//! Safe (`#![forbid(unsafe_code)]`) optional Bevy subsystem bridges for `bamabi` (`ABI 0.4.0`,
 //! Layer 3 in `https://github.com/yaga-simha/bamabi`).
 //!
 //! Each subsystem bridge is individually feature-gated (`default = []`) so headless hosts do not

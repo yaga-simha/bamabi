@@ -1,6 +1,6 @@
 # `bamabi`
 
-Canonical top-level Bevy ECS (`v0.20.1`) host facade crate for the zero-serialization, asymmetric C-ABI (`ABI 0.3.0`, `v0.3.0`) native modding framework (Layer 3 in [`bamabi`](../../README.md)).
+Canonical top-level Bevy ECS (`v0.20.1`) host facade crate for the zero-serialization, asymmetric C-ABI (`ABI 0.4.0`, `v0.4.0`) native modding framework (Layer 3 in [`bamabi`](../../README.md)).
 
 `bamabi` re-exports the slim headless `bamabi_host` (in [`bamabi-core`](https://github.com/yaga-simha/bamabi-core)), procedural derive macros (`#[derive(ModComponent, AbiPod, GuestComponent)]`) and `bamabi_sys` (in [`bamabi-wire`](https://github.com/yaga-simha/bamabi-wire)), optional companion crates ([`bamabi_bridges`](../bamabi_bridges), [`bamabi_render`](../bamabi_render), [`bamabi_reflect`](../bamabi_reflect), and `bamabi_watcher` in [`bamabi-core`](https://github.com/yaga-simha/bamabi-core)), curated bridge presets, and unified `prelude`, while enforcing `#![forbid(unsafe_code)]` across all public host APIs.
 
@@ -57,13 +57,17 @@ fn main() {
 | `preset-ui` | `ModPresetUiPlugin` | `bridge-std-types`, `bridge-asset`, `bridge-picking`, `bridge-ui`, `bridge-feathers` |
 | `preset-full` | `ModPresetFullPlugin` | `preset-3d`, `preset-ui`, `bridge-solari` |
 
-## Granular Feature Flags (18 Opt-In Flags)
+## Granular Feature Flags
 
 | Feature | Purpose |
 |---|---|
+| `dynamic-loader` *(default)* | Dynamic `.so`/`.dylib`/`.dll` loading via `libloading` (`ModLoaderAppExt`, directory DAG loading, hot-reload) |
+| `static-only` | Opt-in static/in-memory-only host profile (`ModRegistryAppExt` + `InMemoryModEntrypoints`) without `dynamic-loader` |
+| `cranelift-object-loader` | Pure-Rust in-memory relocatable `.o` loading via `InMemoryObjectLoader` |
 | `strict-ffi-checks` | Extra runtime FFI pointer, alignment, and handle-generation validation |
 | `diagnostics` | Per-mod and aggregate `bevy_diagnostic` metrics (including budget telemetry) |
 | `signature-verification` | Pure-Rust OpenSSH `SSHSIG`, Ed25519 CA, authority-scoped `SSHKRL`, `.bam_sig`, and hardened `.bampack` (`VerifiedBamPack::extract_to_dir`) pre-load verification |
+| `keygen` | Ed25519 keypair generation and OpenSSH certificate issuance utilities (implies `signature-verification`) |
 | `hot-reload-watcher` | Debounced filesystem hot-reload watcher (`ModHotReloadPlugin`) |
 | `bridge-std-types` | `Transform`, `GlobalTransform`, `Visibility`, `Name`, `Disabled`, `Time<*>`, and `ButtonInput<*>` bridges |
 | `bridge-asset` | Sandboxed `mod://<namespace>/...` `AssetSource` & `AssetOverlayPolicy` (`ModAssetPlugin`) |

@@ -1618,9 +1618,7 @@ fn validate_state_variants<S: States + Copy>(
     Ok(owned_variants)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn finalize_state_exposure<S: States + Copy>(
-    app: &mut App,
+struct FinalizeStateExposureArgs<S: States + Copy> {
     handle: ModStateHandle,
     kind: ModStateKind,
     base_schedule_id: ScheduleId,
@@ -1631,7 +1629,24 @@ fn finalize_state_exposure<S: States + Copy>(
     next_state_handle: Option<BamComponent>,
     next_state_resource_name: Option<&'static str>,
     request_transition: Option<RequestTransitionFn>,
+}
+
+fn finalize_state_exposure<S: States + Copy>(
+    app: &mut App,
+    args: FinalizeStateExposureArgs<S>,
 ) -> Result<ModStateSpec<S>, ModStateError> {
+    let FinalizeStateExposureArgs {
+        handle,
+        kind,
+        base_schedule_id,
+        owned_variants,
+        bridges,
+        state_handle,
+        state_resource_name,
+        next_state_handle,
+        next_state_resource_name,
+        request_transition,
+    } = args;
     let n = owned_variants.len() as u32;
     let short = short_type_name::<S>();
     let full_sanitized = core::any::type_name::<S>().replace("::", ".");
@@ -1895,16 +1910,18 @@ impl ModStateExt for App {
 
         finalize_state_exposure(
             self,
-            handle,
-            ModStateKind::FreelyMutable,
-            base_schedule_id,
-            owned_variants,
-            bridges,
-            state_handle,
-            state_resource_name,
-            Some(next_state_handle),
-            Some(next_state_resource_name),
-            Some(request_transition),
+            FinalizeStateExposureArgs {
+                handle,
+                kind: ModStateKind::FreelyMutable,
+                base_schedule_id,
+                owned_variants,
+                bridges,
+                state_handle,
+                state_resource_name,
+                next_state_handle: Some(next_state_handle),
+                next_state_resource_name: Some(next_state_resource_name),
+                request_transition: Some(request_transition),
+            },
         )
     }
 
@@ -1958,16 +1975,18 @@ impl ModStateExt for App {
 
         finalize_state_exposure(
             self,
-            handle,
-            ModStateKind::SubState,
-            base_schedule_id,
-            owned_variants,
-            bridges,
-            state_handle,
-            state_resource_name,
-            Some(next_state_handle),
-            Some(next_state_resource_name),
-            Some(request_transition),
+            FinalizeStateExposureArgs {
+                handle,
+                kind: ModStateKind::SubState,
+                base_schedule_id,
+                owned_variants,
+                bridges,
+                state_handle,
+                state_resource_name,
+                next_state_handle: Some(next_state_handle),
+                next_state_resource_name: Some(next_state_resource_name),
+                request_transition: Some(request_transition),
+            },
         )
     }
 
@@ -2001,16 +2020,18 @@ impl ModStateExt for App {
 
         finalize_state_exposure(
             self,
-            handle,
-            ModStateKind::Computed,
-            base_schedule_id,
-            owned_variants,
-            bridges,
-            state_handle,
-            state_resource_name,
-            None,
-            None,
-            None,
+            FinalizeStateExposureArgs {
+                handle,
+                kind: ModStateKind::Computed,
+                base_schedule_id,
+                owned_variants,
+                bridges,
+                state_handle,
+                state_resource_name,
+                next_state_handle: None,
+                next_state_resource_name: None,
+                request_transition: None,
+            },
         )
     }
 }

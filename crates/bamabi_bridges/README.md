@@ -1,6 +1,6 @@
 # `bamabi_bridges`
 
-Safe (`#![forbid(unsafe_code)]`) opt-in Bevy `0.20.1` subsystem bridges (`default = []`) and curated feature presets for [`bamabi`](../bamabi) (`ABI 0.3.0`, `v0.3.0`, Layer 3 in [`bamabi`](../../README.md)).
+Safe (`#![forbid(unsafe_code)]`) opt-in Bevy `0.20.1` subsystem bridges (`default = []`) and curated feature presets for [`bamabi`](../bamabi) (`ABI 0.4.0`, `v0.4.0`, Layer 3 in [`bamabi`](../../README.md)).
 
 ## Standalone Usage
 
